@@ -18,35 +18,37 @@ from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.utils import make_grid
 from tqdm import tqdm
 
 from networks.unet_model import UNet
 from dataloaders.dataloader import FundusSegmentation, ProstateSegmentation, MNMSSegmentation, BUSISegmentation
 import dataloaders.custom_transforms as tr
-from utils import losses, metrics, ramps, util
+from utils import losses, metrics, ramps
 from torch.cuda.amp import autocast, GradScaler
 import contextlib
 
 from medpy.metric import binary
 from scipy.ndimage import zoom
+import cv2
+from itertools import chain
+from skimage.measure import label
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='prostate', choices=['fundus', 'prostate', 'MNMS', 'BUSI'])
 parser.add_argument("--save_name", type=str, default="", help="experiment_name")
 parser.add_argument("--overwrite", action='store_true')
-parser.add_argument("--max_iterations", type=int, default=60000, help="maximum epoch number to train")
+parser.add_argument("--max_iterations", type=int, default=None, help="maximum iterations to train, if not set, will use dataset default")
 parser.add_argument('--num_eval_iter', type=int, default=500)
 parser.add_argument("--deterministic", type=int, default=1, help="whether use deterministic training")
-parser.add_argument("--base_lr", type=float, default=0.03, help="segmentation network learning rate")
+parser.add_argument("--base_lr", type=float, default=None, help="segmentation network learning rate, if not set, will use default 0.03 without warmup")
 parser.add_argument("--seed", type=int, default=1337, help="random seed")
 parser.add_argument("--gpu", type=str, default='0')
-parser.add_argument("--threshold", type=float, default=0.95, help="confidence threshold for using pseudo-labels")
+parser.add_argument("--threshold", type=float, default=0.95, help="confidence threshold for using pseudo-labels",)
 
 parser.add_argument('--amp', type=int, default=1, help='use mixed precision training or not')
 
-parser.add_argument("--label_bs", type=int, default=4, help="labeled_batch_size per gpu")
-parser.add_argument("--unlabel_bs", type=int, default=4)
+parser.add_argument("--label_bs", type=int, default=None, help="labeled_batch_size per gpu, auto-set based on lb_num if not provided")
+parser.add_argument("--unlabel_bs", type=int, default=None, help="unlabeled_batch_size per gpu, auto-set based on lb_num if not provided")
 parser.add_argument("--test_bs", type=int, default=1)
 parser.add_argument('--domain_num', type=int, default=6)
 parser.add_argument('--lb_domain', type=int, default=1)
@@ -54,13 +56,14 @@ parser.add_argument('--lb_num', type=int, default=40)
 parser.add_argument('--lb_ratio', type=float, default=0)
 # costs
 parser.add_argument("--ema_decay", type=float, default=0.99, help="ema_decay")
-parser.add_argument("--consistency_type", type=str, default="mse", help="consistency_type")
 parser.add_argument("--consistency", type=float, default=1.0, help="consistency")
 parser.add_argument("--consistency_rampup", type=float, default=200.0, help="consistency_rampup")
 
-parser.add_argument('--save_img', action='store_true')
-parser.add_argument('--save_model', action='store_true')
-parser.add_argument('--img_size', type=int, default=512, help='input patch size of network input')
+parser.add_argument('--save_img',action='store_true')
+parser.add_argument('--save_model',action='store_true')
+parser.add_argument('--warmup', action='store_true', help='If activated, warp up the learning from a lower lr to the base_lr')
+parser.add_argument('--warmup_period', type=int, default=250,
+                    help='Warp up iterations, only valid whrn warmup is activated')
 parser.add_argument('--eval', action='store_true', help='Only run evaluation')
 args = parser.parse_args()
 
@@ -78,13 +81,19 @@ def update_ema_variables(model, ema_model, alpha, global_step):
         ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
 
 def cycle(iterable: Iterable):
-    """Make an iterator returning elements from the iterable."""
+    """Make an iterator returning elements from the iterable.
+
+    .. note::
+        **DO NOT** use `itertools.cycle` on `DataLoader(shuffle=True)`.\n
+        Because `itertools.cycle` saves a copy of each element, batches are shuffled only at the first epoch. \n
+        See https://docs.python.org/3/library/itertools.html#itertools.cycle for more details.
+    """
     while True:
         for x in iterable:
             yield x
 
 @torch.no_grad()
-def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
+def test(args, model, test_dataloader, epoch, writer):
     model.eval()
     val_loss = 0.0
     val_dice = [0.0] * n_part
@@ -99,7 +108,7 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
         domain_val_dice = [0.0] * n_part
         domain_val_dc, domain_val_jc, domain_val_hd, domain_val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
         domain_code = i+1
-        for batch_num, sample in enumerate(cur_dataloader):
+        for batch_num,sample in enumerate(cur_dataloader):
             assert(domain_code == sample['dc'][0].item())
             mask = sample['label']
             if args.dataset == 'fundus':
@@ -112,10 +121,9 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
                 mask = mask.long()
             elif args.dataset == 'BUSI':
                 mask = mask.eq(255).long()
-            
             data = sample['unet_size_img'].cuda()
             output = model(data)
-            pred_label = torch.max(torch.softmax(output, dim=1), dim=1)[1]
+            pred_label = torch.max(torch.softmax(output,dim=1), dim=1)[1]
             pred_label = torch.from_numpy(zoom(pred_label.cpu(), (1, patch_size / data.shape[-2], patch_size / data.shape[-1]), order=0))
             
             if args.dataset == 'fundus':
@@ -129,23 +137,23 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
             elif args.dataset == 'MNMS':
                 pred_onehot = to_3d(pred_label)
                 mask_onehot = to_3d(mask)
-            dice = dice_calcu[args.dataset](np.asarray(pred_label.cpu()), mask.cpu())
+            dice = dice_calcu[args.dataset](np.asarray(pred_label.cpu()),mask.cpu())
             
             dc, jc, hd, asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
             for j in range(len(data)):
                 for i, p in enumerate(part):
-                    dc[i] += binary.dc(np.asarray(pred_onehot[j, i], dtype=bool),
-                                            np.asarray(mask_onehot[j, i], dtype=bool))
-                    jc[i] += binary.jc(np.asarray(pred_onehot[j, i], dtype=bool),
-                                            np.asarray(mask_onehot[j, i], dtype=bool))
-                    if pred_onehot[j, i].float().sum() < 1e-4:
+                    dc[i] += binary.dc(np.asarray(pred_onehot[j,i], dtype=bool),
+                                            np.asarray(mask_onehot[j,i], dtype=bool))
+                    jc[i] += binary.jc(np.asarray(pred_onehot[j,i], dtype=bool),
+                                            np.asarray(mask_onehot[j,i], dtype=bool))
+                    if pred_onehot[j,i].float().sum() < 1e-4:
                         hd[i] += 100
                         asd[i] += 100
                     else:
-                        hd[i] += binary.hd95(np.asarray(pred_onehot[j, i], dtype=bool),
-                                            np.asarray(mask_onehot[j, i], dtype=bool))
-                        asd[i] += binary.asd(np.asarray(pred_onehot[j, i], dtype=bool),
-                                            np.asarray(mask_onehot[j, i], dtype=bool))
+                        hd[i] += binary.hd95(np.asarray(pred_onehot[j,i], dtype=bool),
+                                            np.asarray(mask_onehot[j,i], dtype=bool))
+                        asd[i] += binary.asd(np.asarray(pred_onehot[j,i], dtype=bool),
+                                            np.asarray(mask_onehot[j,i], dtype=bool))
             for i, p in enumerate(part):
                 dc[i] /= len(data)
                 jc[i] /= len(data)
@@ -160,7 +168,7 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
         
         domain_val_loss /= len(cur_dataloader)
         val_loss += domain_val_loss
-        writer.add_scalar('{}_val/domain{}/loss'.format(model_name, domain_code), domain_val_loss, epoch)
+        writer.add_scalar('unet_val/domain{}/loss'.format(domain_code), domain_val_loss, epoch)
         for i in range(len(domain_val_dice)):
             domain_val_dice[i] /= len(cur_dataloader)
             val_dice[i] += domain_val_dice[i]
@@ -173,7 +181,7 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
             domain_val_asd[i] /= len(cur_dataloader)
             val_asd[i] += domain_val_asd[i]
         for n, p in enumerate(part):
-            writer.add_scalar('{}_val/domain{}/val_{}_dice'.format(model_name, domain_code, p), domain_val_dice[n], epoch)
+            writer.add_scalar('unet_val/domain{}/val_{}_dice'.format(domain_code, p), domain_val_dice[n], epoch)
         text = 'domain%d epoch %d : loss : %f' % (domain_code, epoch, domain_val_loss)
         text += '\n\t'
         for n, p in enumerate(part):
@@ -194,7 +202,7 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
         
     model.train()
     val_loss /= domain_num
-    writer.add_scalar('{}_val/loss'.format(model_name), val_loss, epoch)
+    writer.add_scalar('unet_val/loss', val_loss, epoch)
     for i in range(len(val_dice)):
         val_dice[i] /= domain_num
         val_dc[i] /= domain_num
@@ -202,7 +210,7 @@ def test(args, model, test_dataloader, epoch, writer, model_name='unet'):
         val_hd[i] /= domain_num
         val_asd[i] /= domain_num
     for n, p in enumerate(part):
-        writer.add_scalar('{}_val/val_{}_dice'.format(model_name, p), val_dice[n], epoch)
+        writer.add_scalar('unet_val/val_{}_dice'.format(p), val_dice[n], epoch)
     text = 'epoch %d : loss : %f' % (epoch, val_loss)
     text += '\n\t'
     for n, p in enumerate(part):
@@ -276,22 +284,34 @@ class statistics(object):
 
 def train(args, snapshot_path):
     writer = SummaryWriter(snapshot_path + '/log')
-    base_lr = args.base_lr
+    
+    # Learning rate configuration
+    # If base_lr is not set by user, use fixed lr without warmup (original behavior)
+    # If base_lr is set by user, warmup can be optionally enabled
+    if args.base_lr is None:
+        base_lr = 0.00012  # Default fixed learning rate 原始代码：b_lr = base_lr / args.warmup_period  # 例如: 0.03 / 250 = 0.00012
+        args.warmup = False  # Force disable warmup for default lr
+        logging.info("Using default fixed learning rate: 0.03 (warmup disabled)")
+    else:
+        base_lr = args.base_lr
+        if args.warmup:
+            logging.info(f"Using custom learning rate: {base_lr} with warmup enabled (warmup_period={args.warmup_period})")
+        else:
+            logging.info(f"Using custom learning rate: {base_lr} (warmup disabled)")
 
     def create_model(ema=False):
-        # Network definition - only U-Net
-        model = UNet(n_channels=num_channels, n_classes=num_classes+1)
+        # Network definition
+        model = UNet(n_channels = num_channels, n_classes = num_classes+1)
         if ema:
             for param in model.parameters():
                 param.detach_()
         return model.cuda()
 
-    # Create student and teacher U-Net models
-    unet_model = create_model(ema=False)
+    unet_model = create_model()
     ema_unet_model = create_model(ema=True)
 
     max_iterations = args.max_iterations
-    weak = transforms.Compose([tr.RandomScaleCrop(args.img_size),
+    weak = transforms.Compose([tr.RandomScaleCrop(patch_size),
             tr.RandomScaleRotate(fillcolor=fillcolor),
             tr.RandomHorizontalFlip(),
             tr.elastic_transform()
@@ -300,16 +320,16 @@ def train(args, snapshot_path):
     strong = transforms.Compose([
             tr.Brightness(min_v, max_v),
             tr.Contrast(min_v, max_v),
-            tr.GaussianBlur(kernel_size=int(0.1 * args.img_size), num_channels=num_channels),
+            tr.GaussianBlur(kernel_size=int(0.1 * patch_size), num_channels=num_channels),
     ])
 
     normal_toTensor = transforms.Compose([
-        tr.Normalize_tf(dataRange=[0, 1]),
+        tr.Normalize_tf(dataRange=[0,1]),
         tr.ToTensor(unet_size=patch_size)
     ])
 
     domain_num = args.domain_num
-    domain = list(range(1, domain_num+1))
+    domain = list(range(1,domain_num+1))
     if args.dataset == 'fundus':
         domain_len = [50, 99, 320, 320]
     elif args.dataset == 'prostate':
@@ -329,56 +349,67 @@ def train(args, snapshot_path):
     test_dataset = []
     test_dataloader = []
     lb_dataset = dataset(base_dir=train_data_path, phase='train', splitid=lb_domain, domain=[lb_domain], 
-                                                selected_idxs=lb_idxs, weak_transform=weak, normal_toTensor=normal_toTensor, img_size=args.img_size)
+                                                selected_idxs = lb_idxs, weak_transform=weak,normal_toTensor=normal_toTensor, img_size=patch_size)
     ulb_dataset = dataset(base_dir=train_data_path, phase='train', splitid=lb_domain, domain=domain, 
-                                                selected_idxs=unlabeled_idxs, weak_transform=weak, strong_tranform=strong, normal_toTensor=normal_toTensor, img_size=args.img_size)
+                                                selected_idxs=unlabeled_idxs, weak_transform=weak, strong_tranform=strong,normal_toTensor=normal_toTensor, img_size=patch_size)
     for i in range(1, domain_num+1):
-        cur_dataset = dataset(base_dir=train_data_path, phase='test', splitid=-1, domain=[i], normal_toTensor=normal_toTensor, img_size=args.img_size)
+        cur_dataset = dataset(base_dir=train_data_path, phase='test', splitid=-1, domain=[i], normal_toTensor=normal_toTensor, img_size=patch_size)
         test_dataset.append(cur_dataset)
     if not args.eval:
-        lb_dataloader = cycle(DataLoader(lb_dataset, batch_size=args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
-        ulb_dataloader = cycle(DataLoader(ulb_dataset, batch_size=args.unlabel_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
-    for i in range(0, domain_num):
-        cur_dataloader = DataLoader(test_dataset[i], batch_size=args.test_bs, shuffle=False, num_workers=0, pin_memory=True)
+        lb_dataloader = cycle(DataLoader(lb_dataset, batch_size = args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
+        ulb_dataloader = cycle(DataLoader(ulb_dataset, batch_size = args.unlabel_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
+    for i in range(0,domain_num):
+        cur_dataloader = DataLoader(test_dataset[i], batch_size = args.test_bs, shuffle=False, num_workers=0, pin_memory=True)
         test_dataloader.append(cur_dataloader)
 
     iter_num = 0
-    start_epoch = 0
 
     # set to train
     ce_loss = CrossEntropyLoss(reduction='none')
     softmax, sigmoid, multi = True, False, False
     dice_loss = losses.DiceLossWithMask(num_classes+1)
     
-    b_lr = base_lr
-    unet_optimizer = optim.SGD(unet_model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
-    logging.info("{} iterations per epoch".format(args.num_eval_iter))
+    # Initialize optimizer
+    if args.warmup:
+        b_lr = base_lr / args.warmup_period
+        logging.info(f"Warmup enabled: initial lr = {b_lr:.6f}, will warmup to {base_lr} over {args.warmup_period} iterations")
+    else:
+        b_lr = base_lr
+    
+    unet_optimizer = optim.SGD(unet_model.parameters(), lr=b_lr, momentum=0.9, weight_decay=0.0001)
+    
+    logging.info(f"Total iterations: {max_iterations}, evaluation every {args.num_eval_iter} iterations")
 
-    max_epoch = max_iterations // args.num_eval_iter
+    # Calculate number of evaluation cycles
+    num_eval_cycles = max_iterations // args.num_eval_iter
+    
+    # Initialize best metrics
     best_dice = [0.0] * n_part
     best_dice_iter = [-1] * n_part
     best_avg_dice = 0.0
     best_avg_dice_iter = -1
     dice_of_best_avg = [0.0] * n_part
 
-    iter_num = int(iter_num)
     threshold = args.threshold
-
     scaler = GradScaler()
     amp_cm = autocast if args.amp else contextlib.nullcontext
 
-    for epoch_num in range(start_epoch, max_epoch):
+    # Main training loop - iterate by evaluation cycles
+    for eval_cycle in range(num_eval_cycles):
         unet_model.train()
         ema_unet_model.train()
-        p_bar = tqdm(range(args.num_eval_iter))
-        p_bar.set_description(f'No. {epoch_num+1}')
+        p_bar = tqdm(range(args.num_eval_iter), desc=f'Cycle {eval_cycle+1}/{num_eval_cycles}')
         unet_ulb_dice_sta = [statistics() for _ in range(n_part)]
         
         for i_batch in range(1, args.num_eval_iter+1):
+            # Learning rate warmup
+            if args.warmup and iter_num < args.warmup_period:
+                lr_scale = (iter_num + 1) / args.warmup_period
+                for param_group in unet_optimizer.param_groups:
+                    param_group['lr'] = base_lr * lr_scale
+            
             lb_sample = next(lb_dataloader)
             ulb_sample = next(ulb_dataloader)
-            lb_x_w, lb_y = lb_sample['image'], lb_sample['label']
-            ulb_x_w, ulb_x_s, ulb_y = ulb_sample['image'], ulb_sample['strong_aug'], ulb_sample['label']
             lb_unet_size_x_w, lb_unet_size_y = lb_sample['unet_size_img'], lb_sample['unet_size_label']
             ulb_unet_size_x_w, ulb_unet_size_x_s, ulb_unet_size_y = ulb_sample['unet_size_img'], ulb_sample['unet_size_strong_aug'], ulb_sample['unet_size_label']
             
@@ -396,64 +427,50 @@ def train(args, snapshot_path):
             elif args.dataset == 'BUSI':
                 lb_unet_size_mask = lb_unet_size_y.eq(255).long()
                 ulb_unet_size_mask = ulb_unet_size_y.eq(255).long()
-                
             lb_unet_size_x_w, ulb_unet_size_x_w, ulb_unet_size_x_s = lb_unet_size_x_w.cuda(), ulb_unet_size_x_w.cuda(), ulb_unet_size_x_s.cuda()
             lb_unet_size_mask, ulb_unet_size_mask = lb_unet_size_mask.cuda(), ulb_unet_size_mask.cuda()
 
             with amp_cm():
-                # Generate pseudo-labels using teacher model
+                # Generate pseudo-labels from teacher model
                 with torch.no_grad():
                     unet_logits_ulb_x_w = ema_unet_model(ulb_unet_size_x_w)
                     unet_prob_ulb_x_w = torch.softmax(unet_logits_ulb_x_w, dim=1)
                     unet_prob, unet_pseudo_label = torch.max(unet_prob_ulb_x_w, dim=1)
                 
-                # Create confidence mask
-                unet_size_mask = (unet_prob > threshold).unsqueeze(1).float()
-                
-                # Generate CutMix box
-                unet_size_label_box = torch.stack([obtain_cutmix_box(img_size=patch_size, p=1.0) for i in range(len(ulb_unet_size_x_s))], dim=0)
+                # Apply CutMix augmentation
+                unet_size_label_box = torch.stack([obtain_cutmix_box(img_size=patch_size, p=1.0) for i in range(len(ulb_unet_size_x_w))], dim=0)
                 unet_size_img_box = unet_size_label_box.unsqueeze(1)
-                
-                # Apply CutMix: paste labeled samples into unlabeled strong augmented samples
                 ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1-unet_size_img_box) + lb_unet_size_x_w * unet_size_img_box
                 
-                # Update mask and pseudo-label for CutMix regions
+                # Create confidence mask
+                unet_size_mask = (unet_prob > threshold).unsqueeze(1).float()
                 unet_size_mask[unet_size_img_box.expand(unet_size_mask.shape) == 1] = 1
                 unet_size_pseudo_label_ul = (unet_pseudo_label * (1-unet_size_label_box) + lb_unet_size_mask * unet_size_label_box).long()
                 
-                # Forward pass on labeled data
+                # Forward pass on student model
                 unet_logits_lb_x_w = unet_model(lb_unet_size_x_w)
-                
-                # Forward pass on CutMix unlabeled data
                 unet_logits_ulb_x_s_ul = unet_model(ulb_unet_size_x_s_ul)
                 
-                # Calculate Dice for monitoring
-                unet_stu_prob_ulb_x_s_ul = torch.softmax(unet_logits_ulb_x_s_ul, dim=1)
-                _, unet_PL_stu = torch.max(unet_stu_prob_ulb_x_s_ul, dim=1)
-                
+                # Calculate dice on unlabeled data for monitoring
                 if args.dataset == 'fundus':
                     unet_pseudo_label_2layer = to_2d(unet_pseudo_label)
                     ulb_unet_size_mask_2layer = to_2d(ulb_unet_size_mask)
                     unet_ulb_dice = dice_calcu[args.dataset](np.asarray(unet_pseudo_label_2layer.cpu()), ulb_unet_size_mask_2layer.cpu())
                 else:
                     unet_ulb_dice = dice_calcu[args.dataset](np.asarray(unet_pseudo_label.cpu()), ulb_unet_size_mask.cpu())
-                
                 for n, p in enumerate(part):
                     unet_ulb_dice_sta[n].update(unet_ulb_dice[n])
 
-                # Supervised loss on labeled data
+                # Compute losses
                 unet_sup_loss = ce_loss(unet_logits_lb_x_w, lb_unet_size_mask).mean() + \
                             dice_loss(unet_logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
                 
-                # Get consistency weight
                 consistency_weight = get_current_consistency_weight(
-                    iter_num // (args.max_iterations/args.consistency_rampup))
+                    iter_num // (max_iterations/args.consistency_rampup))
 
-                # Unsupervised loss on CutMix data with pseudo-labels
                 unet_unsup_loss = (ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * unet_size_mask.squeeze(1)).mean() + \
                                 dice_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul.unsqueeze(1), mask=unet_size_mask, softmax=softmax, sigmoid=sigmoid, multi=multi)
                 
-                # Total loss
                 loss = unet_sup_loss + consistency_weight * unet_unsup_loss
 
             unet_optimizer.zero_grad()
@@ -466,12 +483,9 @@ def train(args, snapshot_path):
                 loss.backward()
                 unet_optimizer.step()
 
-            # Update EMA teacher model
             update_ema_variables(unet_model, ema_unet_model, args.ema_decay, iter_num)
 
             iter_num = iter_num + 1
-            
-            # Logging
             for n, p in enumerate(part):
                 text = 'train/unet_ulb_{}_dice'.format(p)
                 writer.add_scalar(text, unet_ulb_dice[n], iter_num)
@@ -480,23 +494,21 @@ def train(args, snapshot_path):
             writer.add_scalar('train/unet_sup_loss', unet_sup_loss.item(), iter_num)
             writer.add_scalar('train/unet_unsup_loss', unet_unsup_loss.item(), iter_num)
             writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
-            
             if p_bar is not None:
                 p_bar.update()
 
             if args.dataset == 'fundus':
-                p_bar.set_description('iter %d: L:%.4f, uSL:%.4f, uUL:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f' 
+                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), unet_unsup_loss.item(), consistency_weight, 
                                            unet_size_mask.mean(), unet_ulb_dice[0], unet_ulb_dice[1]))
             elif args.dataset == 'prostate' or args.dataset == 'BUSI':
-                p_bar.set_description('iter %d: L:%.4f, uSL:%.4f, uUL:%.4f, cons:%.4f, mask:%.4f, ud:%.4f' 
+                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, cons:%.4f, mask:%.4f, ud:%.4f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), unet_unsup_loss.item(), consistency_weight, 
                                            unet_size_mask.mean(), unet_ulb_dice[0]))
             elif args.dataset == 'MNMS':
-                p_bar.set_description('iter %d: L:%.4f, uSL:%.4f, uUL:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f,%.4f' 
+                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f,%.4f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), unet_unsup_loss.item(), consistency_weight, 
                                            unet_size_mask.mean(), unet_ulb_dice[0], unet_ulb_dice[1], unet_ulb_dice[2]))
-            
             if iter_num % args.num_eval_iter == 0:
                 if args.dataset == 'fundus':
                     logging.info('iteration %d : loss : %f, unet_sup_loss : %f, unet_unsup_loss : %f, cons_w : %f, mask_ratio : %f, ud:%.6f,%.6f' 
@@ -520,9 +532,10 @@ def train(args, snapshot_path):
         if p_bar is not None:
             p_bar.close()
 
+
         logging.info('test unet model')
         text = ''
-        val_dice = test(args, unet_model, test_dataloader, epoch_num+1, writer, model_name='unet')
+        val_dice = test(args, unet_model, test_dataloader, eval_cycle+1, writer)
         for n, p in enumerate(part):
             if val_dice[n] > best_dice[n]:
                 best_dice[n] = val_dice[n]
@@ -544,7 +557,7 @@ def train(args, snapshot_path):
             for n, p in enumerate(part):
                 text += ', %s_dice: %f' % (p, dice_of_best_avg[n])
         logging.info(text)
-        
+
     writer.close()
 
 
@@ -554,7 +567,7 @@ if __name__ == "__main__":
     snapshot_path = "../model/" + args.dataset + f"/{sys.argv[0].split('.')[0]}/" + args.save_name + "/"
     
     if args.dataset == 'fundus':
-        train_data_path = '/app/MixDSemi/data/Fundus'
+        train_data_path='/app/MixDSemi/data/Fundus'
         part = ['cup', 'disc']
         dataset = FundusSegmentation
         num_channels = 3
@@ -562,11 +575,12 @@ if __name__ == "__main__":
         num_classes = 2
         min_v, max_v = 0.5, 1.5
         fillcolor = 255
-        args.max_iterations = 30000
-        if args.domain_num >= 4:
+        if args.max_iterations is None:
+            args.max_iterations = 30000
+        if args.domain_num >=4:
             args.domain_num = 4
     elif args.dataset == 'prostate':
-        train_data_path = "/app/MixDSemi/data/ProstateSlice"
+        train_data_path="/app/MixDSemi/data/ProstateSlice"
         num_channels = 1
         patch_size = 384
         num_classes = 1
@@ -574,11 +588,12 @@ if __name__ == "__main__":
         dataset = ProstateSegmentation
         min_v, max_v = 0.1, 2
         fillcolor = 255
-        args.max_iterations = 60000
+        if args.max_iterations is None:
+            args.max_iterations = 60000
         if args.domain_num >= 6:
             args.domain_num = 6
     elif args.dataset == 'MNMS':
-        train_data_path = "/app/MixDSemi/data/mnms"
+        train_data_path="/app/MixDSemi/data/mnms"
         num_channels = 1
         patch_size = 288
         num_classes = 3
@@ -586,11 +601,12 @@ if __name__ == "__main__":
         dataset = MNMSSegmentation
         min_v, max_v = 0.1, 2
         fillcolor = 0
-        args.max_iterations = 60000
+        if args.max_iterations is None:
+            args.max_iterations = 60000
         if args.domain_num >= 4:
             args.domain_num = 4
     elif args.dataset == 'BUSI':
-        train_data_path = "../../data/Dataset_BUSI_with_GT"
+        train_data_path="../../data/Dataset_BUSI_with_GT"
         num_channels = 1
         patch_size = 256
         num_classes = 1
@@ -598,25 +614,28 @@ if __name__ == "__main__":
         dataset = BUSISegmentation
         min_v, max_v = 0.1, 2
         fillcolor = 0
-        args.max_iterations = 30000
+        if args.max_iterations is None:
+            args.max_iterations = 30000
         if args.domain_num >= 2:
             args.domain_num = 2
     
-    if args.lb_num < 8:
-        args.label_bs = 2
-        args.unlabel_bs = 2
-    else:
-        args.label_bs = 4
-        args.unlabel_bs = 4
+    if args.label_bs is None or args.unlabel_bs is None:
+        if args.lb_num < 8:
+            args.label_bs = 2
+            args.unlabel_bs = 2
+        else:
+            args.label_bs = 4
+            args.unlabel_bs = 4
 
     if num_classes > 1:
         multimask_output = True
     else:
         multimask_output = False
     n_part = len(part)
-    dice_calcu = {'fundus': metrics.dice_coeff_2label, 'prostate': metrics.dice_coeff, 'MNMS': metrics.dice_coeff_3label, 'BUSI': metrics.dice_coeff}
+    dice_calcu = {'fundus':metrics.dice_coeff_2label, 'prostate':metrics.dice_coeff, 'MNMS':metrics.dice_coeff_3label, 'BUSI':metrics.dice_coeff}
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+
 
     if args.deterministic:
         cudnn.benchmark = False
