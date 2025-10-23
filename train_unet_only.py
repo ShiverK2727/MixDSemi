@@ -606,7 +606,7 @@ if __name__ == "__main__":
         if args.domain_num >= 4:
             args.domain_num = 4
     elif args.dataset == 'BUSI':
-        train_data_path="../../data/Dataset_BUSI_with_GT"
+        train_data_path="/app/MixDSemi/data/Dataset_BUSI_with_GT"
         num_channels = 1
         patch_size = 256
         num_classes = 1
