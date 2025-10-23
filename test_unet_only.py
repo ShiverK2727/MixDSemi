@@ -261,7 +261,8 @@ def main(args, snapshot_path):
 
 
 if __name__ == "__main__":
-    snapshot_path = "../model/" + args.dataset + "/train/" + args.save_name + "/"
+    # Log file should be saved in the same directory as the model
+    snapshot_path = "../model/" + args.dataset + "/train_unet_only/" + args.save_name + "/"
     if args.dataset == 'fundus':
         num_channels = 3
         num_classes = 2
