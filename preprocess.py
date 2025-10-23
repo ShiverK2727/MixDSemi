@@ -159,7 +159,10 @@ def main(data_root, text_root, output_root, model_path, device='cuda'):
                         # 为当前批次的每个图像保存logits
                         for j, image_path in enumerate(batch_paths):
                             image_name = os.path.basename(image_path).replace('.png', '')  # 移除扩展名
-                            domain_text_image_match[image_name] = logits[j].cpu()  # 移到CPU以节省GPU内存
+                            # 将一维logits重塑为[total_types, describe_nums]的二维张量
+                            image_logits = logits[j].cpu()  # shape: [total_types * describe_nums]
+                            reshaped_logits = image_logits.reshape(total_types, describe_nums)  # shape: [total_types, describe_nums]
+                            domain_text_image_match[image_name] = reshaped_logits
                     
                     # 保存当前域、LLM和describe_nums配置的结果
                     output_filename = f"{llm}_{describe_nums}.pt"
