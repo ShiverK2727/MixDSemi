@@ -1,0 +1,2 @@
+python train_unet_only_UCP_DC_v2.py   --dataset prostate   --lb_domain 6   --lb_num 20   --save_name Unet_UCP_symGD_5_DC_v2_d6   --gpu 0   --save_model   --overwrite   --dc_parts 5   --expend_test_steps_interval 250   --expend_max_steps 2000   --expand_conf_threshold 0.6   --expand_conf_weight 1.0   --expend_test_samples 32   --curr_conf_weight 1.0   --curr_conf_threshold 0.75   --curr_conf_samples 64   --ul_weight 1.0   --lu_weight 1.0   --cons_weight 1.0   --llm_model gemini   --describe_nums 80 
+

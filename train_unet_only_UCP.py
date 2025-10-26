@@ -10,11 +10,8 @@ from typing import Iterable
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from tensorboardX import SummaryWriter
-from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -59,12 +56,10 @@ parser.add_argument("--ema_decay", type=float, default=0.99, help="ema_decay")
 parser.add_argument("--consistency", type=float, default=1.0, help="consistency")
 parser.add_argument("--consistency_rampup", type=float, default=200.0, help="consistency_rampup")
 
-parser.add_argument('--save_img',action='store_true')
 parser.add_argument('--save_model',action='store_true')
 parser.add_argument('--warmup', action='store_true', help='If activated, warp up the learning from a lower lr to the base_lr')
 parser.add_argument('--warmup_period', type=int, default=250,
                     help='Warp up iterations, only valid whrn warmup is activated')
-parser.add_argument('--eval', action='store_true', help='Only run evaluation')
 args = parser.parse_args()
 
 
@@ -355,9 +350,9 @@ def train(args, snapshot_path):
     for i in range(1, domain_num+1):
         cur_dataset = dataset(base_dir=train_data_path, phase='test', splitid=-1, domain=[i], normal_toTensor=normal_toTensor, img_size=patch_size)
         test_dataset.append(cur_dataset)
-    if not args.eval:
-        lb_dataloader = cycle(DataLoader(lb_dataset, batch_size = args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
-        ulb_dataloader = cycle(DataLoader(ulb_dataset, batch_size = args.unlabel_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
+        
+    lb_dataloader = cycle(DataLoader(lb_dataset, batch_size = args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
+    ulb_dataloader = cycle(DataLoader(ulb_dataset, batch_size = args.unlabel_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
     for i in range(0,domain_num):
         cur_dataloader = DataLoader(test_dataset[i], batch_size = args.test_bs, shuffle=False, num_workers=0, pin_memory=True)
         test_dataloader.append(cur_dataloader)

@@ -5,10 +5,24 @@ import numpy as np
 from torch.utils.data import Dataset
 from glob import glob
 import random
-import copy
+import torch
 import matplotlib.pyplot as plt
 import h5py
 from scipy.ndimage.interpolation import zoom
+
+
+def _resolve_score_tensor(score_dict, img_key, score_path, phase, allow_missing):
+    """Fetch a score tensor from a domain dictionary with helpful errors."""
+    if score_dict is None:
+        if phase != 'test' and not allow_missing:
+            raise FileNotFoundError(f"Missing score file: {score_path}")
+        return None
+    score_tensor = score_dict.get(img_key)
+    if score_tensor is None:
+        if phase != 'test' and not allow_missing:
+            raise KeyError(f"Score not found for {img_key} in {score_path}")
+        return None
+    return score_tensor.cpu()
 
 class FundusSegmentation(Dataset):
     """
@@ -24,10 +38,15 @@ class FundusSegmentation(Dataset):
                  domain=[1,2,3,4],
                  weak_transform=None,
                  strong_tranform=None,
-                 normal_toTensor = None,
-                 selected_idxs = None,
-                 img_size = 256, 
-                 is_RGB = False
+                 normal_toTensor=None,
+                 selected_idxs=None,
+                 img_size=256,
+                 is_RGB=False,
+                 preprocess_dir='../preprocess/Fundus',
+                 llm_model='gemini',
+                 describe_nums=40,
+                 return_score=False,
+                 allow_missing_scores=False
                  ):
         """
         :param base_dir: path to VOC dataset directory
@@ -45,6 +64,16 @@ class FundusSegmentation(Dataset):
         self.img_domain_code_pool = []
         self.img_size = img_size
         self.is_RGB = is_RGB
+        self.return_score = return_score
+        self.allow_missing_scores = allow_missing_scores
+        self.preprocess_dir = preprocess_dir
+        self.score_pool = []
+        if self.preprocess_dir is not None:
+            assert llm_model in ['gemini', 'GPT5', 'DeepSeek'], f"Unsupported LLM model: {llm_model}"
+            assert describe_nums in [20, 40, 60, 80], f"Unsupported describe nums: {describe_nums}"
+            self.target_llm_config = f"{llm_model}_{describe_nums}.pt"
+        else:
+            self.target_llm_config = None
 
         self.flags_DGS = ['gd', 'nd']
         self.flags_REF = ['g', 'n']
@@ -61,6 +90,20 @@ class FundusSegmentation(Dataset):
 
             imagelist = glob(self._image_dir + '*.png')
             imagelist.sort()
+
+            need_scores = (self.phase != 'test') or self.return_score
+            score_dict = None
+            score_pt_path = None
+            if self.preprocess_dir is not None and need_scores:
+                score_domain = f'Domain{i}'
+                score_pt_path = os.path.join(self.preprocess_dir, score_domain, self.target_llm_config)
+                if os.path.exists(score_pt_path):
+                    score_dict = torch.load(score_pt_path, map_location='cpu')
+                    print(f"Loaded scores from: {score_pt_path}")
+                elif self.phase != 'test' and not self.allow_missing_scores:
+                    raise FileNotFoundError(f"Score file not found: {score_pt_path}")
+                else:
+                    print(f"[WARN] Score file missing for {score_domain}: {score_pt_path}")
 
             if (self.splitid == i or self.splitid == -1) and selected_idxs is not None:
                 total = list(range(len(imagelist)))
@@ -80,6 +123,13 @@ class FundusSegmentation(Dataset):
                 self.img_domain_code_pool.append(i)
                 _img_name = image_path.split('/')[-1]
                 self.img_name_pool.append(_img_name)
+                if need_scores:
+                    img_key = os.path.splitext(_img_name)[0]
+                    score_value = _resolve_score_tensor(score_dict, img_key, score_pt_path, self.phase, self.allow_missing_scores)
+                    if score_value is None and self.phase != 'test' and not self.allow_missing_scores:
+                        raise RuntimeError(f"Missing score tensor for {image_path}")
+                    if (self.phase != 'test') or self.return_score:
+                        self.score_pool.append(score_value)
             print(f'-----Number of domain {i} images: {len(imagelist)}, Excluded: {len(excluded_idxs)}')
 
         self.weak_transform = weak_transform
@@ -92,12 +142,15 @@ class FundusSegmentation(Dataset):
 
     def __len__(self):
         return len(self.image_pool)
+
+    def get_scores(self) -> list:
+        return self.score_pool.copy()
         
     def __getitem__(self, index):
         if self.phase != 'test':
             _img = Image.open(self.image_pool[index]).convert('RGB').resize((self.img_size, self.img_size), Image.LANCZOS)
             _target = Image.open(self.label_pool[index])
-            if _target.mode is 'RGB':
+            if _target.mode == 'RGB':
                 _target = _target.convert('L')
             _target = _target.resize((self.img_size, self.img_size), Image.NEAREST)
             anco_sample = {'image': _img, 'label': _target, 'img_name':self.img_name_pool[index], 'dc': self.img_domain_code_pool[index]}
@@ -109,11 +162,14 @@ class FundusSegmentation(Dataset):
         else:
             _img = Image.open(self.image_pool[index]).convert('RGB').resize((self.img_size, self.img_size), Image.LANCZOS)
             _target = Image.open(self.label_pool[index])
-            if _target.mode is 'RGB':
+            if _target.mode == 'RGB':
                 _target = _target.convert('L')
             _target = _target.resize((256, 256), Image.NEAREST)
             anco_sample = {'image': _img, 'label': _target, 'img_name':self.img_name_pool[index], 'dc': self.img_domain_code_pool[index]}
             anco_sample = self.normal_toTensor(anco_sample)
+        if self.return_score and index < len(self.score_pool):
+            anco_sample['score'] = self.score_pool[index]
+            anco_sample['dataset_index'] = index
         return anco_sample
 
     def _read_img_into_memory(self):
@@ -136,7 +192,7 @@ class FundusSegmentation(Dataset):
                 Image.open(self.image_list[index]['image']).convert('RGB').resize((256, 256), Image.LANCZOS))
             _target = Image.open(self.image_list[index]['label'])
 
-            if _target.mode is 'RGB':
+            if _target.mode == 'RGB':
                 _target = _target.convert('L')
             _target = _target.resize((256, 256), Image.NEAREST)
             self.label_pool.append(_target)
@@ -166,7 +222,13 @@ class ProstateSegmentation(Dataset):
                  normal_toTensor = None,
                  selected_idxs = None,
                  img_size = 384,
-                 is_RGB = False
+                 is_RGB = False,
+                 # CLIP
+                 preprocess_dir='../preprocess/ProstateSlice', # 预处理根目录
+                 llm_model='gemini',      # 'gemini', 'gpt5', ...
+                 describe_nums=40,              # 20, 40, 60, ...
+                 return_score=False,
+                 allow_missing_scores=False
                  ):
         """
         :param base_dir: path to VOC dataset directory
@@ -182,8 +244,17 @@ class ProstateSegmentation(Dataset):
         self.label_pool = []
         self.img_name_pool = []
         self.img_domain_code_pool = []
+
+        # --- 新增: 初始化分数列表 ---
+        self.score_pool = []
+        assert llm_model in ['gemini', 'GPT5', 'DeepSeek'], f"Unsupported LLM model: {llm_model}"
+        assert describe_nums in [20, 40, 60, 80], f"Unsupported describe nums: {describe_nums}"
+        self.target_llm_config = f"{llm_model}_{describe_nums}.pt"
+
         self.img_size = img_size
         self.is_RGB = is_RGB
+        self.return_score = return_score
+        self.allow_missing_scores = allow_missing_scores
 
         self.splitid = splitid
         self.domain = domain
@@ -193,6 +264,20 @@ class ProstateSegmentation(Dataset):
         for i in self.domain:
             self._image_dir = os.path.join(self._base_dir, self.domain_name[i], phase,'image/')
             print('==> Loading {} data from: {}'.format(phase, self._image_dir))
+
+            need_scores = (self.phase != 'test') or self.return_score
+            score_dict = None
+            score_pt_path = None
+            if need_scores:
+                score_pt_path = os.path.join(preprocess_dir, self.domain_name[i], self.target_llm_config)
+                if os.path.exists(score_pt_path):
+                    score_dict = torch.load(score_pt_path, map_location='cpu')
+                    print(f"Loaded scores from: {score_pt_path}")
+                elif self.phase != 'test' and not self.allow_missing_scores:
+                    raise FileNotFoundError(f"Score file not found: {score_pt_path}")
+                else:
+                    print(f"[WARN] Score file missing for {self.domain_name[i]}: {score_pt_path}")
+
 
             imagelist = glob(self._image_dir + '*.png')
             imagelist.sort()
@@ -212,27 +297,40 @@ class ProstateSegmentation(Dataset):
                 self.label_pool.append(gt_path)
                 self.img_domain_code_pool.append(i)
                 _img_name = image_path.split('/')[-1]
+                # print(f'Image name: {_img_name}')
                 self.img_name_pool.append(self.domain_name[i]+'_'+_img_name)
+
+                if need_scores:
+                    _img_key = os.path.splitext(_img_name)[0]
+                    score_value = _resolve_score_tensor(score_dict, _img_key, score_pt_path, self.phase, self.allow_missing_scores)
+                    if score_value is None and self.phase != 'test' and not self.allow_missing_scores:
+                        raise RuntimeError(f"Missing score tensor for {image_path}")
+                    if (self.phase != 'test') or self.return_score:
+                        self.score_pool.append(score_value)
 
         self.weak_transform = weak_transform
         self.strong_transform = strong_tranform
         self.normal_toTensor = normal_toTensor
         
-        
         print('-----Total number of images in {}: {:d}, Excluded: {:d}'.format(phase, len(self.image_pool), excluded_num))
 
     def __len__(self):
         return len(self.image_pool)
+    
+    def get_scores(self) -> list:
+        """
+        返回此数据集中所有样本的分数列表，顺序与 __getitem__ 一致。
+        这是为了方便 Sampler 获取分数并进行排序。
+        """
+        return self.score_pool.copy()
         
     def __getitem__(self, index):
         if self.phase != 'test':
             _img = Image.open(self.image_pool[index]).resize((self.img_size, self.img_size), Image.LANCZOS)
             _target = Image.open(self.label_pool[index]).resize((self.img_size, self.img_size), Image.NEAREST)
-            if _img.mode is 'RGB':
-                print('img rgb')
+            if _img.mode == 'RGB':
                 _img = _img.convert('L')
-            if _target.mode is 'RGB':
-                print('target rgb')
+            if _target.mode == 'RGB':
                 _target = _target.convert('L')
             if self.is_RGB:
                 _img = _img.convert('RGB')
@@ -245,14 +343,17 @@ class ProstateSegmentation(Dataset):
         else:
             _img = Image.open(self.image_pool[index]).resize((self.img_size, self.img_size), Image.LANCZOS)
             _target = Image.open(self.label_pool[index])
-            if _img.mode is 'RGB':
+            if _img.mode == 'RGB':
                 _img = _img.convert('L')
-            if _target.mode is 'RGB':
+            if _target.mode == 'RGB':
                 _target = _target.convert('L')
             if self.is_RGB:
                 _img = _img.convert('RGB')
             anco_sample = {'image': _img, 'label': _target, 'img_name':self.img_name_pool[index], 'dc': self.img_domain_code_pool[index]}
             anco_sample = self.normal_toTensor(anco_sample)
+        if self.return_score and index < len(self.score_pool):
+            anco_sample['score'] = self.score_pool[index]
+            anco_sample['dataset_index'] = index
         return anco_sample
 
     def __str__(self):
@@ -272,10 +373,15 @@ class MNMSSegmentation(Dataset):
                  domain=[1,2,3,4],
                  weak_transform=None,
                  strong_tranform=None,
-                 normal_toTensor = None,
-                 selected_idxs = None,
-                 img_size = 288,
-                 is_RGB = False
+                 normal_toTensor=None,
+                 selected_idxs=None,
+                 img_size=288,
+                 is_RGB=False,
+                 preprocess_dir='../preprocess/MNMS',
+                 llm_model='gemini',
+                 describe_nums=40,
+                 return_score=False,
+                 allow_missing_scores=False
                  ):
         """
         :param base_dir: path to VOC dataset directory
@@ -293,6 +399,16 @@ class MNMSSegmentation(Dataset):
         self.img_domain_code_pool = []
         self.img_size = img_size
         self.is_RGB = is_RGB
+        self.return_score = return_score
+        self.allow_missing_scores = allow_missing_scores
+        self.preprocess_dir = preprocess_dir
+        self.score_pool = []
+        if self.preprocess_dir is not None:
+            assert llm_model in ['gemini', 'GPT5', 'DeepSeek'], f"Unsupported LLM model: {llm_model}"
+            assert describe_nums in [20, 40, 60, 80], f"Unsupported describe nums: {describe_nums}"
+            self.target_llm_config = f"{llm_model}_{describe_nums}.pt"
+        else:
+            self.target_llm_config = None
 
         self.splitid = splitid
         self.domain = domain
@@ -302,6 +418,19 @@ class MNMSSegmentation(Dataset):
         for i in self.domain:
             self._image_dir = os.path.join(self._base_dir, self.domain_name[i], phase,'image/')
             print('==> Loading {} data from: {}'.format(phase, self._image_dir))
+
+            need_scores = (self.phase != 'test') or self.return_score
+            score_dict = None
+            score_pt_path = None
+            if self.preprocess_dir is not None and need_scores:
+                score_pt_path = os.path.join(self.preprocess_dir, self.domain_name[i], self.target_llm_config)
+                if os.path.exists(score_pt_path):
+                    score_dict = torch.load(score_pt_path, map_location='cpu')
+                    print(f"Loaded scores from: {score_pt_path}")
+                elif self.phase != 'test' and not self.allow_missing_scores:
+                    raise FileNotFoundError(f"Score file not found: {score_pt_path}")
+                else:
+                    print(f"[WARN] Score file missing for {self.domain_name[i]}: {score_pt_path}")
 
             imagelist = glob(self._image_dir + '*.png')
             imagelist.sort()
@@ -322,6 +451,13 @@ class MNMSSegmentation(Dataset):
                 self.img_domain_code_pool.append(i)
                 _img_name = image_path.split('/')[-1]
                 self.img_name_pool.append(self.domain_name[i]+'_'+_img_name)
+                if need_scores:
+                    img_key = os.path.splitext(_img_name)[0]
+                    score_value = _resolve_score_tensor(score_dict, img_key, score_pt_path, self.phase, self.allow_missing_scores)
+                    if score_value is None and self.phase != 'test' and not self.allow_missing_scores:
+                        raise RuntimeError(f"Missing score tensor for {image_path}")
+                    if (self.phase != 'test') or self.return_score:
+                        self.score_pool.append(score_value)
 
         self.weak_transform = weak_transform
         self.strong_transform = strong_tranform
@@ -332,13 +468,15 @@ class MNMSSegmentation(Dataset):
 
     def __len__(self):
         return len(self.image_pool)
+
+    def get_scores(self) -> list:
+        return self.score_pool.copy()
         
     def __getitem__(self, index):
         if self.phase != 'test':
             _img = Image.open(self.image_pool[index]).resize((self.img_size, self.img_size), Image.BILINEAR)
             _target = Image.open(self.label_pool[index]).resize((self.img_size, self.img_size), Image.NEAREST)
-            if _img.mode is 'RGB':
-                print('img rgb')
+            if _img.mode == 'RGB':
                 _img = _img.convert('L')
             target_np = np.array(_target)
             new_target = np.zeros((self.img_size, self.img_size), dtype=np.uint8)
@@ -354,7 +492,7 @@ class MNMSSegmentation(Dataset):
         else:
             _img = Image.open(self.image_pool[index]).resize((self.img_size, self.img_size), Image.BILINEAR)
             _target = Image.open(self.label_pool[index]).resize((288,288), Image.NEAREST)
-            if _img.mode is 'RGB':
+            if _img.mode == 'RGB':
                 _img = _img.convert('L')
             # if _target.mode is 'RGB':
             #     _target = _target.convert('L')
@@ -365,6 +503,9 @@ class MNMSSegmentation(Dataset):
             _target = Image.fromarray(new_target)
             anco_sample = {'image': _img, 'label': _target, 'img_name':self.img_name_pool[index], 'dc': self.img_domain_code_pool[index]}
             anco_sample = self.normal_toTensor(anco_sample)
+        if self.return_score and index < len(self.score_pool):
+            anco_sample['score'] = self.score_pool[index]
+            anco_sample['dataset_index'] = index
         return anco_sample
 
 
@@ -429,9 +570,14 @@ class ACDCSegmentation(Dataset):
 class BUSISegmentation(Dataset):
     def __init__(self, base_dir=None, phase='train', splitid=1, domain=[1,2],
                  weak_transform=None, strong_tranform=None, normal_toTensor=None,
-                 selected_idxs = None,
-                 img_size = 256,
-                 is_RGB = False):
+                 selected_idxs=None,
+                 img_size=256,
+                 is_RGB=False,
+                 preprocess_dir='../preprocess/BUSI',
+                 llm_model='gemini',
+                 describe_nums=40,
+                 return_score=False,
+                 allow_missing_scores=False):
         self._base_dir = base_dir
         self.image_list = []
         self.phase = phase
@@ -444,6 +590,16 @@ class BUSISegmentation(Dataset):
         self.weak_transform = weak_transform
         self.strong_transform = strong_tranform
         self.normal_toTensor = normal_toTensor
+        self.return_score = return_score
+        self.allow_missing_scores = allow_missing_scores
+        self.preprocess_dir = preprocess_dir
+        self.score_pool = []
+        if self.preprocess_dir is not None:
+            assert llm_model in ['gemini', 'GPT5', 'DeepSeek'], f"Unsupported LLM model: {llm_model}"
+            assert describe_nums in [20, 40, 60, 80], f"Unsupported describe nums: {describe_nums}"
+            self.target_llm_config = f"{llm_model}_{describe_nums}.pt"
+        else:
+            self.target_llm_config = None
         
         self.splitid = splitid
         self.domain = domain
@@ -457,6 +613,18 @@ class BUSISegmentation(Dataset):
             domain_data_list = []
             imagelist = glob(self._image_dir + '*.png')
             imagelist.sort()
+            need_scores = (self.phase != 'test') or self.return_score
+            score_dict = None
+            score_pt_path = None
+            if self.preprocess_dir is not None and need_scores:
+                score_pt_path = os.path.join(self.preprocess_dir, self.domain_name[i], self.target_llm_config)
+                if os.path.exists(score_pt_path):
+                    score_dict = torch.load(score_pt_path, map_location='cpu')
+                    print(f"Loaded scores from: {score_pt_path}")
+                elif self.phase != 'test' and not self.allow_missing_scores:
+                    raise FileNotFoundError(f"Score file not found: {score_pt_path}")
+                else:
+                    print(f"[WARN] Score file missing for {self.domain_name[i]}: {score_pt_path}")
             for image in imagelist:
                 if 'mask' not in image:
                     domain_data_list.append([image])
@@ -485,11 +653,21 @@ class BUSISegmentation(Dataset):
                 self.img_domain_code_pool.append(i)
                 _img_name = image_path[0].split('/')[-1]
                 self.img_name_pool.append(self.domain_name[i]+'_'+_img_name)
+                if need_scores:
+                    img_key = os.path.splitext(_img_name)[0]
+                    score_value = _resolve_score_tensor(score_dict, img_key, score_pt_path, self.phase, self.allow_missing_scores)
+                    if score_value is None and self.phase != 'test' and not self.allow_missing_scores:
+                        raise RuntimeError(f"Missing score tensor for {image_path[0]}")
+                    if (self.phase != 'test') or self.return_score:
+                        self.score_pool.append(score_value)
         
         print('-----Total number of images in {}: {:d}, Excluded: {:d}'.format(phase, len(self.sample_list), excluded_num))
 
     def __len__(self):
         return len(self.sample_list)
+
+    def get_scores(self) -> list:
+        return self.score_pool.copy()
 
     def __getitem__(self, idx):
         _img = Image.open(self.sample_list[idx][0]).convert('L').resize((self.img_size, self.img_size), Image.LANCZOS)
@@ -521,6 +699,9 @@ class BUSISegmentation(Dataset):
             sample = self.normal_toTensor(sample)
         else:
             sample = self.normal_toTensor(sample)
+        if self.return_score and idx < len(self.score_pool):
+            sample['score'] = self.score_pool[idx]
+            sample['dataset_index'] = idx
         return sample
 
 
@@ -619,10 +800,10 @@ class MSCMRSegSegmentation(Dataset):
         _img = Image.fromarray(npimg*255).convert('L').resize((self.img_size, self.img_size), Image.LANCZOS)
         if self.phase != 'test':
             _target = Image.fromarray(nplab).convert('L').resize((self.img_size, self.img_size), Image.NEAREST)
-            if _img.mode is 'RGB':
+            if _img.mode == 'RGB':
                 print('img rgb')
                 _img = _img.convert('L')
-            if _target.mode is 'RGB':
+            if _target.mode == 'RGB':
                 print('target rgb')
                 _target = _target.convert('L')
             if self.is_RGB:
@@ -635,9 +816,9 @@ class MSCMRSegSegmentation(Dataset):
             anco_sample = self.normal_toTensor(anco_sample)
         else:
             _target = Image.fromarray(nplab).convert('L').resize((192, 192), Image.NEAREST)
-            if _img.mode is 'RGB':
+            if _img.mode == 'RGB':
                 _img = _img.convert('L')
-            if _target.mode is 'RGB':
+            if _target.mode == 'RGB':
                 _target = _target.convert('L')
             if self.is_RGB:
                 _img = _img.convert('RGB')
@@ -652,41 +833,61 @@ class MSCMRSegSegmentation(Dataset):
         return 'Prostate(phase=' + self.phase+str(self.splitid) + ')'
 
 if __name__ == '__main__':
-    import custom_transforms as tr
-    from utils import decode_segmap
     from torch.utils.data import DataLoader
     from torchvision import transforms
-    import matplotlib.pyplot as plt
+    from utils.domain_curriculum import build_distance_curriculum, DistanceCurriculumSampler
 
-    composed_transforms_tr = transforms.Compose([
-        # tr.RandomHorizontalFlip(),
-        # tr.RandomSized(512),
-        tr.RandomRotate(15),
-        tr.ToTensor()])
+    def simple_normalize(sample):
+        """Minimal tensor conversion for quick sampler sanity checks."""
+        sample['image'] = transforms.ToTensor()(sample['image'])
+        sample['label'] = torch.as_tensor(np.array(sample['label']), dtype=torch.long)
+        if 'score' in sample:
+            sample['score'] = torch.as_tensor(sample['score'], dtype=torch.float32)
+        return sample
 
-    voc_train = FundusSegmentation(#split='train1',
-    splitid=[1,2],lb_domain=2,lb_ratio=0.2,
-                                   transform=composed_transforms_tr)
+    prostate_dataset = ProstateSegmentation(
+        base_dir='/app/MixDSemi/data/ProstateSlice',
+        phase='train',
+        splitid=1,
+        domain=[1, 2, 3, 4, 5, 6],
+        weak_transform=None,
+        strong_tranform=None,
+        normal_toTensor=simple_normalize,
+        preprocess_dir='/app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice',
+        llm_model='gemini',
+        describe_nums=40,
+        return_score=True,
+    )
 
-    dataloader = DataLoader(voc_train, batch_size=5, shuffle=True, num_workers=0)
-    print(len(dataloader))
-    for ii, sample in enumerate(dataloader):
-        # print(sample)
-        exit(0)
-        for jj in range(sample["image"].size()[0]):
-            img = sample['image'].numpy()
-            gt = sample['label'].numpy()
-            tmp = np.array(gt[jj]).astype(np.uint8)
-            segmap = tmp
-            img_tmp = np.transpose(img[jj], axes=[1, 2, 0]).astype(np.uint8)
-            plt.figure()
-            plt.title('display')
-            plt.subplot(211)
-            plt.imshow(img_tmp)
-            plt.subplot(212)
-            plt.imshow(segmap)
+    score_list = prostate_dataset.get_scores()
+    print(f'Total samples: {len(prostate_dataset)}, collected scores: {len(score_list)}')
 
-            break
-    plt.show(block=True)
+    if score_list:
+        labeled_indices = list(range(0, 40))
+        unlabeled_indices = list(range(40, len(prostate_dataset)))
+        labeled_scores = [score_list[i] for i in labeled_indices]
+        unlabeled_scores = [score_list[i] for i in unlabeled_indices]
+
+        prototype, distances, sorted_unlabeled_indices, partitions = build_distance_curriculum(
+            labeled_scores,
+            unlabeled_scores,
+            unlabeled_indices,
+            num_partitions=4,
+        )
+
+        print(f'Prototype dimension: {prototype.numel()}')
+        print('Top-5 closest distances:', distances[sorted_unlabeled_indices[:5]].tolist())
+        print('Partition sizes:', [len(p) for p in partitions])
+
+        sampler = DistanceCurriculumSampler(partitions, initial_stage=1, seed=123, shuffle=True)
+        loader = DataLoader(prostate_dataset, batch_size=4, sampler=sampler, num_workers=0)
+        batch = next(iter(loader))
+        print('Stage-1 batch idx:', batch['dataset_index'].tolist())
+
+        sampler.expand()  # 扩展到第二阶段
+        batch2 = next(iter(loader))
+        print('Stage-2 batch idx:', batch2['dataset_index'].tolist())
+    else:
+        print('Score list empty; please check preprocessing outputs.')
 
 

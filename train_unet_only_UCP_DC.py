@@ -13,22 +13,20 @@ import torch.backends.cudnn as cudnn
 import torch.optim as optim
 from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from tqdm import tqdm
 
 from networks.unet_model import UNet
-from dataloaders.dataloader import FundusSegmentation, ProstateSegmentation, MNMSSegmentation, BUSISegmentation
+from dataloaders.dataloader_dc import FundusSegmentation, ProstateSegmentation, MNMSSegmentation, BUSISegmentation
 import dataloaders.custom_transforms as tr
 from utils import losses, metrics, ramps
+from utils.domain_curriculum import build_distance_curriculum, DomainDistanceCurriculumSampler
 from torch.cuda.amp import autocast, GradScaler
 import contextlib
 
 from medpy.metric import binary
 from scipy.ndimage import zoom
-import cv2
-from itertools import chain
-from skimage.measure import label
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='prostate', choices=['fundus', 'prostate', 'MNMS', 'BUSI'])
@@ -60,6 +58,12 @@ parser.add_argument('--save_model',action='store_true')
 parser.add_argument('--warmup', action='store_true', help='If activated, warp up the learning from a lower lr to the base_lr')
 parser.add_argument('--warmup_period', type=int, default=250,
                     help='Warp up iterations, only valid whrn warmup is activated')
+# domain curriculum
+parser.add_argument('--dc_parts', type=int, default=5, help='Number of curriculum partitions')
+parser.add_argument('--expend_test_samples', type=int, default=32, help='Number of samples to test from expend partition')
+parser.add_argument('--expend_test_steps_interval', type=int, default=100, help='Number of steps between testing on expend partition')
+parser.add_argument('--expend_max_steps', type=int, default=1000, help='Maximum number of steps for expend partition')
+parser.add_argument('--expand_conf_threshold', type=float, default=0.6, help='Confidence threshold for expanding curriculum partition')
 args = parser.parse_args()
 
 
@@ -341,23 +345,73 @@ def train(args, snapshot_path):
         lb_num = args.lb_num
     lb_idxs = list(range(lb_num))
     unlabeled_idxs = list(range(lb_num, data_num))
+
+    lb_kwargs = dict(
+        base_dir=train_data_path,
+        phase='train',
+        splitid=lb_domain,
+        domain=[lb_domain],
+        selected_idxs=lb_idxs,
+        weak_transform=weak,
+        normal_toTensor=normal_toTensor,
+        img_size=patch_size,
+    )
+    ulb_kwargs = dict(
+        base_dir=train_data_path,
+        phase='train',
+        splitid=lb_domain,
+        domain=domain,
+        selected_idxs=unlabeled_idxs,
+        weak_transform=weak,
+        strong_tranform=strong,
+        normal_toTensor=normal_toTensor,
+        img_size=patch_size,
+    )
+
+    lb_dataset = dataset(**lb_kwargs)
+    ulb_dataset = dataset(**ulb_kwargs)
+
+
+
+    curriculum_partitions = args.dc_parts
+
+    labeled_scores = lb_dataset.get_scores()
+    unlabeled_scores = ulb_dataset.get_scores()
+    unlabeled_indices = list(range(len(unlabeled_scores)))
+
+    _, _, _, partitions = build_distance_curriculum(
+        labeled_scores,
+        unlabeled_scores,
+        unlabeled_indices,
+        num_partitions=curriculum_partitions,
+    )
+    curriculum_sampler = DomainDistanceCurriculumSampler(
+        partitions,
+        initial_stage=1,
+        seed=args.seed,
+        shuffle=True,
+    )
+
     test_dataset = []
     test_dataloader = []
-    lb_dataset = dataset(base_dir=train_data_path, phase='train', splitid=lb_domain, domain=[lb_domain], 
-                                                selected_idxs = lb_idxs, weak_transform=weak,normal_toTensor=normal_toTensor, img_size=patch_size)
-    ulb_dataset = dataset(base_dir=train_data_path, phase='train', splitid=lb_domain, domain=domain, 
-                                                selected_idxs=unlabeled_idxs, weak_transform=weak, strong_tranform=strong,normal_toTensor=normal_toTensor, img_size=patch_size)
     for i in range(1, domain_num+1):
         cur_dataset = dataset(base_dir=train_data_path, phase='test', splitid=-1, domain=[i], normal_toTensor=normal_toTensor, img_size=patch_size)
         test_dataset.append(cur_dataset)
-
-    lb_dataloader = cycle(DataLoader(lb_dataset, batch_size = args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
-    ulb_dataloader = cycle(DataLoader(ulb_dataset, batch_size = args.unlabel_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True))
+    lb_loader = DataLoader(lb_dataset, batch_size=args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
+    if curriculum_sampler is not None:
+        ulb_loader = DataLoader(ulb_dataset, batch_size=args.unlabel_bs, sampler=curriculum_sampler, num_workers=2, pin_memory=True, drop_last=True)
+        logging.info("Using curriculum sampler for unlabeled data loader.")
+    else:
+        ulb_loader = DataLoader(ulb_dataset, batch_size=args.unlabel_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
+        logging.info("Using random sampler for unlabeled data loader.")
+    lb_dataloader = cycle(lb_loader)
+    ulb_dataloader = cycle(ulb_loader)
     for i in range(0,domain_num):
         cur_dataloader = DataLoader(test_dataset[i], batch_size = args.test_bs, shuffle=False, num_workers=0, pin_memory=True)
         test_dataloader.append(cur_dataloader)
 
     iter_num = 0
+    last_stage_update_iter = 0
 
     # set to train
     ce_loss = CrossEntropyLoss(reduction='none')
@@ -388,6 +442,24 @@ def train(args, snapshot_path):
     threshold = args.threshold
     scaler = GradScaler()
     amp_cm = autocast if args.amp else contextlib.nullcontext
+
+    if curriculum_sampler.stage < len(partitions):
+        next_partition_indices = partitions[curriculum_sampler.stage]
+        if len(next_partition_indices) > args.expend_test_samples:
+            selected_indices = torch.randperm(len(next_partition_indices))[:args.expend_test_samples].tolist()
+            next_partition_indices = [next_partition_indices[i] for i in selected_indices]
+        test_expend_dataset = Subset(ulb_dataset, next_partition_indices)
+        test_expend_dataloader = DataLoader(test_expend_dataset, batch_size=args.test_bs, shuffle=False, num_workers=2, pin_memory=True)
+        test_expend_domain_partition = curriculum_sampler.stage + 1
+        logging.info(
+            "Initialized expend test dataset with %d samples from partition %d",
+            len(next_partition_indices),
+            test_expend_domain_partition,
+        )
+    else:
+        test_expend_dataset = None
+        test_expend_dataloader = None
+        test_expend_domain_partition = None
 
     # Main training loop - iterate by evaluation cycles
     for eval_cycle in range(num_eval_cycles):
@@ -485,11 +557,11 @@ def train(args, snapshot_path):
                 unet_size_pseudo_label_lu = (lb_unet_size_mask * (1-unet_size_label_box) + 
                                               unet_pseudo_label * unet_size_label_box).long()
                 
-                # ========== Student Model: 4 forward passes (matching MiDSS) ==========
+                # ========== Student Model: 3 forward passes (removed consistency loss) ==========
                 unet_logits_lb_x_w = unet_model(lb_unet_size_x_w)
                 unet_logits_ulb_x_s_ul = unet_model(ulb_unet_size_x_s_ul)
                 unet_logits_ulb_x_s_lu = unet_model(ulb_unet_size_x_s_lu)
-                unet_logits_ulb_x_s = unet_model(ulb_unet_size_x_s)  # Pure strong augmentation
+                # Removed: unet_logits_ulb_x_s (pure strong augmentation for consistency loss)
                 
                 # Calculate dice on unlabeled data for monitoring
                 if args.dataset == 'fundus':
@@ -501,7 +573,6 @@ def train(args, snapshot_path):
                 for n, p in enumerate(part):
                     unet_ulb_dice_sta[n].update(unet_ulb_dice[n])
 
-                # ========== Loss Computation (matching MiDSS) ==========
                 # Supervised loss
                 unet_sup_loss = ce_loss(unet_logits_lb_x_w, lb_unet_size_mask).mean() + \
                             dice_loss(unet_logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
@@ -520,16 +591,8 @@ def train(args, snapshot_path):
                                       mask_lu.squeeze(1)).mean() + \
                                      dice_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu.unsqueeze(1), 
                                               mask=mask_lu, softmax=softmax, sigmoid=sigmoid, multi=multi)
-
-                # Consistency loss (pure strong augmentation)
-                unet_unsup_loss_s = (ce_loss(unet_logits_ulb_x_s, pseudo_label_w) * 
-                                     mask_w.squeeze(1)).mean() + \
-                                    dice_loss(unet_logits_ulb_x_s, pseudo_label_w.unsqueeze(1), 
-                                             mask=mask_w, softmax=softmax, sigmoid=sigmoid, multi=multi)
                 
-                # Total loss (matching MiDSS formula)
-                loss = unet_sup_loss + consistency_weight * (unet_unsup_loss_ul + unet_unsup_loss_lu + 
-                                                             consistency_weight * unet_unsup_loss_s)
+                loss = unet_sup_loss + consistency_weight * (unet_unsup_loss_ul + unet_unsup_loss_lu)
 
             unet_optimizer.zero_grad()
 
@@ -544,53 +607,129 @@ def train(args, snapshot_path):
             update_ema_variables(unet_model, ema_unet_model, args.ema_decay, iter_num)
 
             iter_num = iter_num + 1
+    
+            if (
+                iter_num % args.expend_test_steps_interval == 0
+                and test_expend_dataloader is not None
+                and curriculum_sampler.stage < args.dc_parts
+            ):
+                total_self_conf = []
+                for curr_batch, sample in enumerate(test_expend_dataloader):
+                    ema_unet_model.eval()
+                    unet_model.eval()
+                    data = sample['unet_size_img'].cuda()
+                    with torch.no_grad():
+                        ext_pred = unet_model(data)
+                        ext_prob = torch.softmax(ext_pred, dim=1)
+                        ext_prob, ext_pseudo_label = torch.max(ext_prob, dim=1)
+                        ext_ema_pred = ema_unet_model(data)
+                        ext_ema_prob = torch.softmax(ext_ema_pred, dim=1)
+                        ext_ema_prob, ext_ema_pseudo_label = torch.max(ext_ema_prob, dim=1)
+                    if args.dataset == 'fundus':
+                        self_conf = dice_calcu[args.dataset](
+                            np.asarray(to_2d(ext_pseudo_label).cpu()),
+                            to_2d(ext_ema_pseudo_label).cpu(),
+                            ret_arr=True,
+                        )
+                    else:
+                        self_conf = dice_calcu[args.dataset](
+                            np.asarray(ext_pseudo_label.clone().cpu()),
+                            ext_ema_pseudo_label.clone().cpu(),
+                            ret_arr=True,
+                        )
+                    self_conf = np.mean(self_conf, axis=0)
+                    total_self_conf.extend(self_conf)
+                avg_self_conf = float(np.mean(total_self_conf)) if total_self_conf else 0.0
+                logging.info(
+                    "Expend Test at iteration %d: Average self-consistency Dice = %.4f on partition %d",
+                    iter_num,
+                    avg_self_conf,
+                    test_expend_domain_partition,
+                )
+
+                elapsed_since_stage_update = iter_num - last_stage_update_iter
+                if avg_self_conf >= args.expand_conf_threshold or elapsed_since_stage_update >= args.expend_max_steps:
+                    prev_stage = curriculum_sampler.stage
+                    curriculum_sampler.expand()
+                    last_stage_update_iter = iter_num
+
+                    logging.info(
+                        "Curriculum sampler advanced from stage %d to %d at iteration %d",
+                        prev_stage,
+                        curriculum_sampler.stage,
+                        iter_num,
+                    )
+                    if curriculum_sampler.stage < len(partitions):
+                        next_partition_indices = partitions[curriculum_sampler.stage]
+                        if len(next_partition_indices) > args.expend_test_samples:
+                            selected_indices = torch.randperm(len(next_partition_indices))[:args.expend_test_samples].tolist()
+                            next_partition_indices = [next_partition_indices[i] for i in selected_indices]
+                        test_expend_dataset = Subset(ulb_dataset, next_partition_indices)
+                        test_expend_dataloader = DataLoader(
+                            test_expend_dataset,
+                            batch_size=args.test_bs,
+                            shuffle=False,
+                            num_workers=2,
+                            pin_memory=True,
+                        )
+                        test_expend_domain_partition = curriculum_sampler.stage + 1
+                        logging.info(
+                            "Updated expend test dataset with %d samples from partition %d",
+                            len(next_partition_indices),
+                            test_expend_domain_partition,
+                        )
+                    else:
+                        test_expend_dataset = None
+                        test_expend_dataloader = None
+                        test_expend_domain_partition = None
+
             for n, p in enumerate(part):
                 text = 'train/unet_ulb_{}_dice'.format(p)
                 writer.add_scalar(text, unet_ulb_dice[n], iter_num)
             writer.add_scalar('train/mask_ul', mask_ul.mean(), iter_num)
             writer.add_scalar('train/mask_lu', mask_lu.mean(), iter_num)
-            writer.add_scalar('train/mask_w', mask_w.mean(), iter_num)
+            # Removed: mask_w (only used for consistency loss)
             writer.add_scalar('train/ensemble_ratio', ensemble.mean(), iter_num)
             writer.add_scalar('train/loss', loss.item(), iter_num)
             writer.add_scalar('train/unet_sup_loss', unet_sup_loss.item(), iter_num)
             writer.add_scalar('train/unet_unsup_loss_ul', unet_unsup_loss_ul.item(), iter_num)
             writer.add_scalar('train/unet_unsup_loss_lu', unet_unsup_loss_lu.item(), iter_num)
-            writer.add_scalar('train/unet_unsup_loss_s', unet_unsup_loss_s.item(), iter_num)
+            # Removed: unet_unsup_loss_s (consistency loss)
             writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
             writer.add_scalar('train/learning_rate', unet_optimizer.param_groups[0]['lr'], iter_num)
             if p_bar is not None:
                 p_bar.update()
 
             if args.dataset == 'fundus':
-                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, LU:%.4f, S:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f' 
+                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, LU:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), 
-                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(), unet_unsup_loss_s.item(),
+                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(),
                                            consistency_weight, mask_ul.mean(), unet_ulb_dice[0], unet_ulb_dice[1]))
             elif args.dataset == 'prostate' or args.dataset == 'BUSI':
-                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, LU:%.4f, S:%.4f, cons:%.4f, mask:%.4f, ud:%.4f' 
+                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, LU:%.4f, cons:%.4f, mask:%.4f, ud:%.4f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), 
-                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(), unet_unsup_loss_s.item(),
+                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(),
                                            consistency_weight, mask_ul.mean(), unet_ulb_dice[0]))
             elif args.dataset == 'MNMS':
-                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, LU:%.4f, S:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f,%.4f' 
+                p_bar.set_description('iter %d: L:%.4f, SL:%.4f, UL:%.4f, LU:%.4f, cons:%.4f, mask:%.4f, ud:%.4f,%.4f,%.4f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), 
-                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(), unet_unsup_loss_s.item(),
+                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(),
                                            consistency_weight, mask_ul.mean(), unet_ulb_dice[0], unet_ulb_dice[1], unet_ulb_dice[2]))
             if iter_num % args.num_eval_iter == 0:
                 if args.dataset == 'fundus':
-                    logging.info('iteration %d : loss : %f, unet_sup_loss : %f, UL : %f, LU : %f, S : %f, cons_w : %f, mask_ul : %f, ud:%.6f,%.6f' 
+                    logging.info('iteration %d : loss : %f, unet_sup_loss : %f, UL : %f, LU : %f, cons_w : %f, mask_ul : %f, ud:%.6f,%.6f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), 
-                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(), unet_unsup_loss_s.item(),
+                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(),
                                            consistency_weight, mask_ul.mean(), unet_ulb_dice_sta[0].avg, unet_ulb_dice_sta[1].avg))
                 elif args.dataset == 'prostate' or args.dataset == 'BUSI':
-                    logging.info('iteration %d : loss : %f, unet_sup_loss : %f, UL : %f, LU : %f, S : %f, cons_w : %f, mask_ul : %f, ud:%.6f' 
+                    logging.info('iteration %d : loss : %f, unet_sup_loss : %f, UL : %f, LU : %f, cons_w : %f, mask_ul : %f, ud:%.6f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), 
-                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(), unet_unsup_loss_s.item(),
+                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(),
                                            consistency_weight, mask_ul.mean(), unet_ulb_dice_sta[0].avg))
                 elif args.dataset == 'MNMS':
-                    logging.info('iteration %d : loss : %f, unet_sup_loss : %f, UL : %f, LU : %f, S : %f, cons_w : %f, mask_ul : %f, ud:%.6f,%.6f,%.6f' 
+                    logging.info('iteration %d : loss : %f, unet_sup_loss : %f, UL : %f, LU : %f, cons_w : %f, mask_ul : %f, ud:%.6f,%.6f,%.6f' 
                                         % (iter_num, loss.item(), unet_sup_loss.item(), 
-                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(), unet_unsup_loss_s.item(),
+                                           unet_unsup_loss_ul.item(), unet_unsup_loss_lu.item(),
                                            consistency_weight, mask_ul.mean(), unet_ulb_dice_sta[0].avg, unet_ulb_dice_sta[1].avg, unet_ulb_dice_sta[2].avg))
                 text = ''
                 for n, p in enumerate(part):
@@ -607,6 +746,17 @@ def train(args, snapshot_path):
         text = ''
         current_iter = (eval_cycle + 1) * args.num_eval_iter
         val_dice = test(args, unet_model, test_dataloader, current_iter, writer)
+        
+        # Test expend partition if available
+        if test_expend_dataloader is not None:
+            logging.info('test expend partition %d (%d samples)', test_expend_domain_partition, len(test_expend_dataset))
+            val_dice_expend = test(args, unet_model, [test_expend_dataloader], current_iter, writer)
+            # Log expend partition results
+            expend_text = 'expend_partition_%d: ' % test_expend_domain_partition
+            for n, p in enumerate(part):
+                expend_text += 'val_%s_dice: %f, ' % (p, val_dice_expend[n])
+            logging.info(expend_text)
+        
         for n, p in enumerate(part):
             if val_dice[n] > best_dice[n]:
                 best_dice[n] = val_dice[n]
