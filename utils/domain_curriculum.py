@@ -86,9 +86,23 @@ class DomainDistanceCurriculumSampler(Sampler[int]):
         self.total_indices = sum(len(part) for part in self.partitions)
         self.shuffle = shuffle
         self.seed = seed
+        # epoch used to vary the RNG seed in a reproducible way
+        self._epoch = 0
         self.stage = 0
         self._active_indices: List[int] = []
         self.set_stage(initial_stage)
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set epoch index used to derive RNG seed for shuffling.
+
+        This allows reproducible but epoch-varying permutations by seeding the
+        RNG with self.seed + epoch. Call this from the training loop at the
+        start of each epoch/cycle.
+        """
+        try:
+            self._epoch = int(epoch)
+        except Exception:
+            self._epoch = 0
 
     def set_stage(self, stage: int) -> None:
         stage = max(1, min(stage, len(self.partitions)))
@@ -118,7 +132,8 @@ class DomainDistanceCurriculumSampler(Sampler[int]):
             return iter([])
         if self.shuffle:
             generator = torch.Generator()
-            generator.manual_seed(self.seed + int(time.time()))
+            # Use seed + epoch for reproducible, epoch-varying permutations.
+            generator.manual_seed(self.seed + int(getattr(self, '_epoch', 0)))
             order = torch.randperm(len(self._active_indices), generator=generator)
             shuffled = [self._active_indices[i] for i in order]
             return iter(shuffled)

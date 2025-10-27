@@ -33,6 +33,90 @@ import contextlib
 from medpy.metric import binary
 from scipy.ndimage import zoom
 
+
+# ----------------- MiDSS frequency augmentation utilities -----------------
+def _extract_amp_phase(image: np.ndarray):
+    """Return amplitude and phase of image using FFT.
+
+    Supports grayscale (H,W) or multi-channel (H,W,C).
+    """
+    if image.ndim == 2:
+        F = np.fft.fft2(image)
+        amp = np.abs(F)
+        pha = np.angle(F)
+        return amp, pha
+    elif image.ndim == 3:
+        amps = []
+        phas = []
+        for c in range(image.shape[2]):
+            F = np.fft.fft2(image[:, :, c])
+            amps.append(np.abs(F))
+            phas.append(np.angle(F))
+        return np.stack(amps, axis=2), np.stack(phas, axis=2)
+    else:
+        raise ValueError('Unsupported image ndim for FFT: {}'.format(image.ndim))
+
+
+def _low_freq_mutate_np(amp_src: np.ndarray, amp_trg: np.ndarray, L=0.1):
+    """Replace low-frequency region of amp_src with that from amp_trg.
+
+    L is the ratio (relative to min(h,w)) determining the half-size of the
+    square low-frequency region to swap (same as MiDSS style).
+    """
+    a_src = amp_src.copy()
+    h, w = a_src.shape[:2]
+    b = int(np.amin((h, w)) * L)
+    if b < 1:
+        b = 1
+    c_h = h // 2
+    c_w = w // 2
+    h1 = max(0, c_h - b)
+    h2 = min(h, c_h + b)
+    w1 = max(0, c_w - b)
+    w2 = min(w, c_w + b)
+    if amp_trg.shape[:2] != (h, w):
+        # If sizes differ, do a best-effort center-crop on target
+        tr = amp_trg
+        tr_h, tr_w = tr.shape[:2]
+        sh = (tr_h - h) // 2 if tr_h > h else 0
+        sw = (tr_w - w) // 2 if tr_w > w else 0
+        tr = tr[sh:sh + h, sw:sw + w]
+        amp_trg = tr
+    a_src[h1:h2, w1:w2] = amp_trg[h1:h2, w1:w2]
+    return a_src
+
+
+def source_to_target_freq(src_img: np.ndarray, tgt_img: np.ndarray, L=0.1):
+    """Mutate src_img's low-frequency amplitude with tgt_img and return result.
+
+    Inputs are numpy arrays HxW or HxWxC. Returns array with same shape.
+    """
+    # Work on float32
+    src = src_img.astype(np.float32)
+    tgt = tgt_img.astype(np.float32)
+    if src.ndim == 2:
+        amp_s, pha_s = _extract_amp_phase(src)
+        amp_t, _ = _extract_amp_phase(tgt)
+        amp_s_mut = _low_freq_mutate_np(amp_s, amp_t, L=L)
+        F = amp_s_mut * np.exp(1j * pha_s)
+        recon = np.fft.ifft2(F)
+        recon = np.real(recon)
+        return recon
+    elif src.ndim == 3:
+        out = np.zeros_like(src)
+        for c in range(src.shape[2]):
+            amp_s, pha_s = _extract_amp_phase(src[:, :, c])
+            amp_t, _ = _extract_amp_phase(tgt[:, :, c])
+            amp_s_mut = _low_freq_mutate_np(amp_s, amp_t, L=L)
+            F = amp_s_mut * np.exp(1j * pha_s)
+            tmp = np.fft.ifft2(F)
+            out[:, :, c] = np.real(tmp)
+        return out
+    else:
+        raise ValueError('Unsupported image ndim for source_to_target_freq: {}'.format(src.ndim))
+
+# -------------------------------------------------------------------------
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='prostate', choices=['fundus', 'prostate', 'MNMS', 'BUSI'])
 parser.add_argument("--save_name", type=str, default="", help="experiment_name")
@@ -46,6 +130,9 @@ parser.add_argument("--gpu", type=str, default='0')
 parser.add_argument("--threshold", type=float, default=0.95, help="confidence threshold for using pseudo-labels",)
 
 parser.add_argument('--amp', type=int, default=1, help='use mixed precision training or not')
+
+# Optional: enable MiDSS-style frequency-domain augmentation (kept separate from geometric/color transforms)
+parser.add_argument('--use_freq_aug', action='store_true', help='Enable frequency-domain augmentation (MiDSS style)')
 
 parser.add_argument("--label_bs", type=int, default=None, help="labeled_batch_size per gpu, auto-set based on lb_num if not provided")
 parser.add_argument("--unlabel_bs", type=int, default=None, help="unlabeled_batch_size per gpu, auto-set based on lb_num if not provided")
@@ -441,6 +528,35 @@ def train(args, snapshot_path):
     lb_dataset = dataset(**lb_kwargs)
     ulb_dataset = dataset(**ulb_kwargs)
 
+    # If user enabled frequency augmentation, perform a small sanity check here.
+    if args.use_freq_aug:
+        try:
+            # pick two samples (use unlabeled if available, else labeled)
+            if len(ulb_dataset) >= 2:
+                a = ulb_dataset[0]['unet_size_img']
+                b = ulb_dataset[1]['unet_size_img']
+            elif len(ulb_dataset) == 1:
+                a = ulb_dataset[0]['unet_size_img']
+                b = ulb_dataset[0]['unet_size_img']
+            else:
+                a = lb_dataset[0]['unet_size_img']
+                b = lb_dataset[0]['unet_size_img']
+
+            # convert torch tensor (C,H,W) -> numpy (H,W,C) and scale to [0,1] if needed
+            a_np = a.cpu().numpy()
+            b_np = b.cpu().numpy()
+            if a_np.ndim == 3:
+                a_np = np.transpose(a_np, (1, 2, 0))
+                b_np = np.transpose(b_np, (1, 2, 0))
+            # run augmentation with default L=0.1
+            mutated = source_to_target_freq(a_np, b_np, L=0.1)
+            if mutated.shape != a_np.shape:
+                logging.warning('Freq-aug sanity check: unexpected shape mutated %s vs src %s', mutated.shape, a_np.shape)
+            else:
+                logging.info('Freq-aug sanity check passed (shapes match): %s', mutated.shape)
+        except Exception as e:
+            logging.warning('Frequency augmentation sanity check failed: %s', str(e))
+
 
 
     curriculum_partitions = args.dc_parts
@@ -540,6 +656,14 @@ def train(args, snapshot_path):
 
     # Main training loop - iterate by evaluation cycles
     for eval_cycle in range(num_eval_cycles):
+        # Set epoch for curriculum sampler so shuffling is reproducible per-cycle
+        if curriculum_sampler is not None:
+            try:
+                curriculum_sampler.set_epoch(eval_cycle)
+            except Exception:
+                # Defensive: if sampler doesn't implement set_epoch, ignore
+                pass
+
         unet_model.train()
         ema_unet_model.train()
         p_bar = tqdm(range(args.num_eval_iter), desc=f'Cycle {eval_cycle+1}/{num_eval_cycles}')

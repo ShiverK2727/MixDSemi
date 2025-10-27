@@ -19,11 +19,6 @@ from tqdm import tqdm
 
 from networks.unet_model import UNet
 from dataloaders.dataloader_dc import FundusSegmentation, ProstateSegmentation, MNMSSegmentation, BUSISegmentation
-from dataloaders.dataloader import  FundusSegmentation as FundusSegmentationTest
-from dataloaders.dataloader import  ProstateSegmentation as ProstateSegmentationTest
-from dataloaders.dataloader import  MNMSSegmentation as MNMSSegmentationTest
-from dataloaders.dataloader import  BUSISegmentation as BUSISegmentationTest
-
 import dataloaders.custom_transforms as tr
 from utils import losses, metrics, ramps
 from utils.domain_curriculum import build_distance_curriculum, DomainDistanceCurriculumSampler
@@ -61,7 +56,7 @@ parser.add_argument("--consistency_rampup", type=float, default=200.0, help="con
 
 parser.add_argument('--save_model',action='store_true')
 parser.add_argument('--warmup', action='store_true', help='If activated, warp up the learning from a lower lr to the base_lr')
-parser.add_argument('--warmup_period', type=int, default=5000,
+parser.add_argument('--warmup_period', type=int, default=250,
                     help='Warp up iterations, only valid whrn warmup is activated')
 # domain curriculum
 parser.add_argument('--dc_parts', type=int, default=5, help='Number of curriculum partitions')
@@ -79,6 +74,8 @@ parser.add_argument('--cons_weight', type=float, default=1.0, help='Weight for s
 parser.add_argument('--preprocess_dir', type=str, default=None, help='Override preprocessing root directory for score tensors')
 parser.add_argument('--llm_model', type=str, default='gemini', choices=['gemini', 'GPT5', 'DeepSeek'], help='LLM model used to generate score tensors')
 parser.add_argument('--describe_nums', type=int, default=40, choices=[20, 40, 60, 80], help='Number of textual descriptions used during preprocessing')
+# parser.add_argument('--return_score', action='store_true', help='Return per-sample score tensor in dataloader items')
+# parser.add_argument('--allow_missing_scores', action='store_true', help='Allow datasets to proceed even if some score tensors are missing')
 args = parser.parse_args()
 
 
@@ -165,15 +162,12 @@ def test(args, model, test_dataloader, iteration, writer):
     val_dice = [0.0] * n_part
     val_dc, val_jc, val_hd, val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
     domain_num = len(test_dataloader)
-    print(f"Starting evaluation over {domain_num} domains...")
     for i in range(domain_num):
         cur_dataloader = test_dataloader[i]
         domain_val_dice = [0.0] * n_part
         domain_val_dc, domain_val_jc, domain_val_hd, domain_val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
         domain_code = i+1
         for batch_num,sample in enumerate(cur_dataloader):
-            print(f"  Evaluating domain {domain_code}, batch {batch_num+1}/{len(cur_dataloader)}")
-            print(f"    Sample dc code: {sample['dc'][0].item()}")
             assert(domain_code == sample['dc'][0].item())
             mask = sample['label']
             if args.dataset == 'fundus':
@@ -465,13 +459,18 @@ def train(args, snapshot_path):
     test_dataset = []
     test_dataloader = []
     for i in range(1, domain_num+1):
-        cur_dataset = dataset_test(
+        cur_dataset = dataset(
             base_dir=train_data_path,
             phase='test',
             splitid=-1,
             domain=[i],
             normal_toTensor=normal_toTensor,
-            img_size=patch_size
+            img_size=patch_size,
+            preprocess_dir=dataset_preprocess_dir,
+            llm_model=args.llm_model,
+            describe_nums=args.describe_nums,
+            return_score=False,  # 测试集不返回分数
+            allow_missing_scores=True,  # 允许缺失分数文件
         )
         test_dataset.append(cur_dataset)
     lb_loader = DataLoader(lb_dataset, batch_size=args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
@@ -679,7 +678,7 @@ def train(args, snapshot_path):
                 lu_term = args.lu_weight * unet_unsup_loss_lu
                 cons_term = args.cons_weight * unet_unsup_loss_s
 
-                loss = unet_sup_loss + consistency_weight * (ul_term + lu_term + cons_term)
+                loss = unet_sup_loss + consistency_weight * (ul_term + lu_term + consistency_weight * cons_term)
 
             unet_optimizer.zero_grad()
 
@@ -863,6 +862,16 @@ def train(args, snapshot_path):
         current_iter = (eval_cycle + 1) * args.num_eval_iter
         val_dice = test(args, unet_model, test_dataloader, current_iter, writer)
         
+        # Test expend partition if available
+        if test_expend_dataloader is not None:
+            logging.info('test expend partition %d (%d samples)', test_expend_domain_partition, len(test_expend_dataset))
+            val_dice_expend = test(args, unet_model, [test_expend_dataloader], current_iter, writer)
+            # Log expend partition results
+            expend_text = 'expend_partition_%d: ' % test_expend_domain_partition
+            for n, p in enumerate(part):
+                expend_text += 'val_%s_dice: %f, ' % (p, val_dice_expend[n])
+            logging.info(expend_text)
+        
         for n, p in enumerate(part):
             if val_dice[n] > best_dice[n]:
                 best_dice[n] = val_dice[n]
@@ -897,7 +906,6 @@ if __name__ == "__main__":
         train_data_path='/app/MixDSemi/data/Fundus'
         part = ['cup', 'disc']
         dataset = FundusSegmentation
-        dataset_test = FundusSegmentationTest
         num_channels = 3
         patch_size = 256
         num_classes = 2
@@ -914,7 +922,6 @@ if __name__ == "__main__":
         num_classes = 1
         part = ['base'] 
         dataset = ProstateSegmentation
-        dataset_test = ProstateSegmentationTest
         min_v, max_v = 0.1, 2
         fillcolor = 255
         if args.max_iterations is None:
@@ -928,7 +935,6 @@ if __name__ == "__main__":
         num_classes = 3
         part = ['lv', 'myo', 'rv'] 
         dataset = MNMSSegmentation
-        dataset_test = MNMSSegmentationTest
         min_v, max_v = 0.1, 2
         fillcolor = 0
         if args.max_iterations is None:
@@ -942,7 +948,6 @@ if __name__ == "__main__":
         num_classes = 1
         part = ['base'] 
         dataset = BUSISegmentation
-        dataset_test = BUSISegmentationTest
         min_v, max_v = 0.1, 2
         fillcolor = 0
         if args.max_iterations is None:
@@ -1002,7 +1007,6 @@ if __name__ == "__main__":
     config_dict['patch_size'] = patch_size
     config_dict['num_classes'] = num_classes
     config_dict['dataset_preprocess_dir'] = dataset_preprocess_dir
-    config_dict['dataset_test_class'] = dataset_test.__name__
     
     config_file = os.path.join(snapshot_path, 'training_config.json')
     with open(config_file, 'w') as f:
