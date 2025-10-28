@@ -1,0 +1,79 @@
+python train_unet_MiDSS_DC_v2.py \
+  --dataset prostate \
+  --lb_domain 1 \
+  --lb_num 20 \
+  --save_name MIDSS_5_DC_v2_d1_v7_2_cu1_30000_gpt5_80 \
+  --gpu 3 \
+  --save_model \
+  --overwrite \
+  --dc_parts 5 \
+  --dc_distance_mode sqrt_prod \
+  --enable_piecewise_tau \
+  --tau_min 0.80 \
+  --tau_max 0.95 \
+  --expend_test_steps_interval 300 \
+  --expend_max_steps 5000 \
+  --expend_test_samples 256 \
+  --expand_conf_threshold 0.75 \
+  --expand_conf_weight 1.0 \
+  --curr_conf_weight 1.0 \
+  --curr_conf_threshold 0.75 \
+  --curr_conf_samples 256 \
+  --ul_weight 1.0 \
+  --lu_weight 1.0 \
+  --cons_weight 1.0 \
+  --conf_strategy dice \
+  --conf_teacher_temp 1.0 \
+  --use_symgd \
+  --symgd_mode full \
+  --llm_model GPT5 \
+  --describe_nums 80 \
+  --use_freq_aug \
+  --max_iterations 30000 \
+  --test_bs 1 \
+  --deterministic 1 \
+  --threshold 0.95 \
+  --num_eval_iter 500 \
+  --save_model
+
+
+screen -dmS midss-dc-v2-5-prostate-d1-v7-2 bash -c "python train_unet_MiDSS_DC_v2.py \
+  --dataset prostate \
+  --lb_domain 1 \
+  --lb_num 20 \
+  --save_name MIDSS_5_DC_v2_d1_v7_2_cu1_30000_gpt5_80 \
+  --gpu 3 \
+  --save_model \
+  --overwrite \
+  --dc_parts 5 \
+  --dc_distance_mode sqrt_prod \
+  --enable_piecewise_tau \
+  --tau_min 0.80 \
+  --tau_max 0.95 \
+  --expend_test_steps_interval 300 \
+  --expend_max_steps 5000 \
+  --expend_test_samples 256 \
+  --expand_conf_threshold 0.75 \
+  --expand_conf_weight 1.0 \
+  --curr_conf_weight 1.0 \
+  --curr_conf_threshold 0.75 \
+  --curr_conf_samples 256 \
+  --ul_weight 1.0 \
+  --lu_weight 1.0 \
+  --cons_weight 1.0 \
+  --conf_strategy dice \
+  --conf_teacher_temp 1.0 \
+  --use_symgd \
+  --symgd_mode full \
+  --llm_model GPT5 \
+  --describe_nums 80 \
+  --use_freq_aug \
+  --max_iterations 30000 \
+  --amp 1 \
+  --label_bs 4 \
+  --unlabel_bs 4 \
+  --test_bs 1 \
+  --deterministic 1 \
+  --threshold 0.95 \
+  --num_eval_iter 500 \
+  --save_model"

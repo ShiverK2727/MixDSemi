@@ -57,13 +57,46 @@ def build_distance_curriculum(
     unlabeled_scores: Sequence[torch.Tensor],
     unlabeled_indices: Sequence[int],
     num_partitions: int,
+    distance_mode: str = "prototype",
 ) -> Tuple[torch.Tensor, torch.Tensor, List[int], List[List[int]]]:
-    """根据得分构建距离排序和分段结果。"""
+    """根据得分构建距离排序和分段结果。
+
+    distance_mode controls how distances are computed for unlabeled samples:
+      - "prototype" (default): distance = L2(unlabeled_score, prototype_of_labeled)
+      - "sqrt_prod": distance = sqrt( delta_L * delta_U ), where
+            delta_L = L2(unlabeled_score, prototype_of_labeled)
+            delta_U = L2(unlabeled_score, prototype_of_unlabeled)
+
+    Returns: (prototype_labeled, distances, sorted_indices, partitions)
+    """
     prototype = compute_prototype(labeled_scores)
-    distances = compute_l2_distances(unlabeled_scores, prototype)
+
+    if distance_mode == "prototype":
+        distances = compute_l2_distances(unlabeled_scores, prototype)
+    elif distance_mode == "sqrt_prod":
+        # compute prototype of unlabeled scores (center of unlabeled distribution)
+        unlabeled_proto = compute_prototype(unlabeled_scores) if len(unlabeled_scores) > 0 else None
+        # delta_L: distance to labeled prototype
+        delta_L = compute_l2_distances(unlabeled_scores, prototype)
+        # delta_U: distance to unlabeled prototype (if available)
+        if unlabeled_proto is None:
+            # fallback to delta_L if unlabeled proto cannot be computed
+            delta_U = delta_L.clone()
+        else:
+            delta_U = compute_l2_distances(unlabeled_scores, unlabeled_proto)
+
+        # element-wise sqrt(prod). ensure non-negative and same shape
+        prod = delta_L * delta_U
+        # numerical safety: clamp to >= 0
+        prod = torch.clamp(prod, min=0.0)
+        distances = torch.sqrt(prod)
+    else:
+        raise ValueError(f"Unknown distance_mode: {distance_mode}")
+
     if len(unlabeled_indices) != len(distances):
         raise ValueError("Length mismatch between indices and distances")
-    # 根据距离排序索引
+
+    # 根据距离排序索引 (ascending)
     sorted_pairs = sorted(zip(unlabeled_indices, distances.tolist()), key=lambda x: x[1])
     sorted_indices = [idx for idx, _ in sorted_pairs]
     partitions = partition_by_distance(sorted_indices, num_partitions)
@@ -141,3 +174,6 @@ class DomainDistanceCurriculumSampler(Sampler[int]):
 
     def __len__(self) -> int:
         return len(self._active_indices)
+    
+
+

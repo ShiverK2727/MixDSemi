@@ -1,11 +1,11 @@
 import argparse
+import contextlib
 import logging
 import os
 import random
 import shutil
 import sys
 import time
-from typing import Iterable
 
 import numpy as np
 import torch
@@ -17,184 +17,29 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from tqdm import tqdm
 
-from networks.unet_model import UNet
-from dataloaders.dataloader_dc import FundusSegmentation, ProstateSegmentation, MNMSSegmentation, BUSISegmentation
-from dataloaders.dataloader import  FundusSegmentation as FundusSegmentationTest
-from dataloaders.dataloader import  ProstateSegmentation as ProstateSegmentationTest
-from dataloaders.dataloader import  MNMSSegmentation as MNMSSegmentationTest
-from dataloaders.dataloader import  BUSISegmentation as BUSISegmentationTest
-
 import dataloaders.custom_transforms as tr
-from utils import losses, metrics, ramps
-from utils.domain_curriculum import build_distance_curriculum, DomainDistanceCurriculumSampler
-from torch.cuda.amp import autocast, GradScaler
-import contextlib
-
+from dataloaders.dataloader import BUSISegmentation as BUSISegmentationTest
+from dataloaders.dataloader import FundusSegmentation as FundusSegmentationTest
+from dataloaders.dataloader import MNMSSegmentation as MNMSSegmentationTest
+from dataloaders.dataloader import ProstateSegmentation as ProstateSegmentationTest
+from dataloaders.dataloader_dc import BUSISegmentation, FundusSegmentation, MNMSSegmentation, ProstateSegmentation
 from medpy.metric import binary
+from networks.unet_model import UNet
 from scipy.ndimage import zoom
+from torch.cuda.amp import GradScaler, autocast
 
-
-# ----------------- MiDSS frequency augmentation utilities -----------------
-def _extract_amp_phase(image: np.ndarray):
-    """Return amplitude and phase of image using FFT.
-
-    Supports grayscale (H,W) or multi-channel (H,W,C).
-    """
-    if image.ndim == 2:
-        F = np.fft.fft2(image)
-        amp = np.abs(F)
-        pha = np.angle(F)
-        return amp, pha
-    elif image.ndim == 3:
-        amps = []
-        phas = []
-        for c in range(image.shape[2]):
-            F = np.fft.fft2(image[:, :, c])
-            amps.append(np.abs(F))
-            phas.append(np.angle(F))
-        return np.stack(amps, axis=2), np.stack(phas, axis=2)
-    else:
-        raise ValueError('Unsupported image ndim for FFT: {}'.format(image.ndim))
-
-
-def _low_freq_mutate_np(amp_src: np.ndarray, amp_trg: np.ndarray, L=0.1):
-    """Replace low-frequency region of amp_src with that from amp_trg.
-
-    L is the ratio (relative to min(h,w)) determining the half-size of the
-    square low-frequency region to swap (same as MiDSS style).
-    """
-    a_src = amp_src.copy()
-    h, w = a_src.shape[:2]
-    b = int(np.amin((h, w)) * L)
-    if b < 1:
-        b = 1
-    c_h = h // 2
-    c_w = w // 2
-    h1 = max(0, c_h - b)
-    h2 = min(h, c_h + b)
-    w1 = max(0, c_w - b)
-    w2 = min(w, c_w + b)
-    if amp_trg.shape[:2] != (h, w):
-        # If sizes differ, do a best-effort center-crop on target
-        tr = amp_trg
-        tr_h, tr_w = tr.shape[:2]
-        sh = (tr_h - h) // 2 if tr_h > h else 0
-        sw = (tr_w - w) // 2 if tr_w > w else 0
-        tr = tr[sh:sh + h, sw:sw + w]
-        amp_trg = tr
-    a_src[h1:h2, w1:w2] = amp_trg[h1:h2, w1:w2]
-    return a_src
-
-
-def source_to_target_freq(src_img: np.ndarray, tgt_img: np.ndarray, L=0.1):
-    """Mutate src_img's low-frequency amplitude with tgt_img and return result.
-
-    Inputs are numpy arrays HxW or HxWxC. Returns array with same shape.
-    """
-    # Work on float32
-    src = src_img.astype(np.float32)
-    tgt = tgt_img.astype(np.float32)
-    if src.ndim == 2:
-        amp_s, pha_s = _extract_amp_phase(src)
-        amp_t, _ = _extract_amp_phase(tgt)
-        amp_s_mut = _low_freq_mutate_np(amp_s, amp_t, L=L)
-        F = amp_s_mut * np.exp(1j * pha_s)
-        recon = np.fft.ifft2(F)
-        recon = np.real(recon)
-        return recon
-    elif src.ndim == 3:
-        out = np.zeros_like(src)
-        for c in range(src.shape[2]):
-            amp_s, pha_s = _extract_amp_phase(src[:, :, c])
-            amp_t, _ = _extract_amp_phase(tgt[:, :, c])
-            amp_s_mut = _low_freq_mutate_np(amp_s, amp_t, L=L)
-            F = amp_s_mut * np.exp(1j * pha_s)
-            tmp = np.fft.ifft2(F)
-            out[:, :, c] = np.real(tmp)
-        return out
-    else:
-        raise ValueError('Unsupported image ndim for source_to_target_freq: {}'.format(src.ndim))
-
-
-# ----------------- MiDSS-style frequency augmentation for training -----------------
-def extract_amp_spectrum(img_np):
-    """Extract amplitude spectrum from image (MiDSS style).
-    
-    Args:
-        img_np: numpy array of shape (C, H, W) in [0, 255] range
-    
-    Returns:
-        amp_np: amplitude spectrum of shape (C, H, W)
-    """
-    fft = np.fft.fft2(img_np, axes=(-2, -1))
-    amp_np = np.abs(fft)
-    return amp_np
-
-
-def low_freq_mutate_np(amp_src, amp_trg, L=0.1, degree=1):
-    """Mutate low-frequency components of source amplitude with target (MiDSS style).
-    
-    Args:
-        amp_src: source amplitude spectrum (C, H, W)
-        amp_trg: target amplitude spectrum (C, H, W)
-        L: ratio determining the size of low-frequency region
-        degree: interpolation degree (0 to 1), controls mixing strength
-    
-    Returns:
-        mutated amplitude spectrum
-    """
-    a_src = np.fft.fftshift(amp_src, axes=(-2, -1))
-    a_trg = np.fft.fftshift(amp_trg, axes=(-2, -1))
-    
-    _, h, w = a_src.shape
-    b = int(np.floor(np.amin((h, w)) * L))
-    c_h = int(np.floor(h / 2.0))
-    c_w = int(np.floor(w / 2.0))
-    
-    h1 = c_h - b
-    h2 = c_h + b + 1
-    w1 = c_w - b
-    w2 = c_w + b + 1
-    
-    ratio = random.uniform(0, degree)
-    
-    a_src[:, h1:h2, w1:w2] = a_src[:, h1:h2, w1:w2] * (1 - ratio) + a_trg[:, h1:h2, w1:w2] * ratio
-    a_src = np.fft.ifftshift(a_src, axes=(-2, -1))
-    return a_src
-
-
-def source_to_target_freq_midss(src_img, amp_trg, L=0.1, degree=1):
-    """Apply frequency-domain augmentation (MiDSS style).
-    
-    Args:
-        src_img: source image numpy array (C, H, W) in [0, 255] range
-        amp_trg: target amplitude spectrum (C, H, W)
-        L: ratio for low-frequency region size
-        degree: mixing strength (0 to 1)
-    
-    Returns:
-        augmented image numpy array (C, H, W) in [0, 255] range
-    """
-    src_img_np = src_img
-    fft_src_np = np.fft.fft2(src_img_np, axes=(-2, -1))
-    
-    # Extract amplitude and phase
-    amp_src = np.abs(fft_src_np)
-    pha_src = np.angle(fft_src_np)
-    
-    # Mutate the amplitude
-    amp_src_ = low_freq_mutate_np(amp_src, amp_trg, L=L, degree=degree)
-    
-    # Reconstruct with mutated amplitude
-    fft_src_ = amp_src_ * np.exp(1j * pha_src)
-    
-    # Get the mutated image
-    src_in_trg = np.fft.ifft2(fft_src_, axes=(-2, -1))
-    src_in_trg = np.real(src_in_trg)
-    
-    return src_in_trg
+from utils import losses, metrics, ramps
+from utils.conf import available_conf_strategies, compute_self_consistency
+from utils.domain_curriculum import DomainDistanceCurriculumSampler, build_distance_curriculum
+from utils.label_ops import to_2d, to_3d
+from utils.tp_ram import extract_amp_spectrum, source_to_target_freq, source_to_target_freq_midss
+from utils.training import Statistics, cycle, obtain_cutmix_box
 
 # -------------------------------------------------------------------------
+
+CONF_STRATEGIES = available_conf_strategies()
+if not CONF_STRATEGIES:
+    raise RuntimeError("No confidence strategies registered. Check utils.conf module registration.")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='prostate', choices=['fundus', 'prostate', 'MNMS', 'BUSI'])
@@ -236,8 +81,6 @@ parser.add_argument('--expend_test_samples', type=int, default=32, help='Number 
 parser.add_argument('--expend_test_steps_interval', type=int, default=100, help='Number of steps between testing on expend partition')
 parser.add_argument('--expend_max_steps', type=int, default=1000, help='Maximum number of steps for expend partition')
 parser.add_argument('--expand_conf_threshold', type=float, default=0.6, help='Confidence threshold for expanding curriculum partition')
-parser.add_argument('--expand_conf_weight', type=float, default=1.0, help='Weight for next-partition confidence when deciding curriculum expansion')
-parser.add_argument('--curr_conf_weight', type=float, default=0.0, help='Weight for current-partition confidence when deciding curriculum expansion')
 parser.add_argument('--curr_conf_threshold', type=float, default=0.6, help='Confidence threshold for current-partition samples')
 parser.add_argument('--curr_conf_samples', type=int, default=32, help='Number of active-partition samples to draw for confidence test')
 parser.add_argument('--ul_weight', type=float, default=1.0, help='Weight for UL CutMix pseudo-label loss')
@@ -246,12 +89,52 @@ parser.add_argument('--cons_weight', type=float, default=1.0, help='Weight for s
 parser.add_argument('--preprocess_dir', type=str, default=None, help='Override preprocessing root directory for score tensors')
 parser.add_argument('--llm_model', type=str, default='gemini', choices=['gemini', 'GPT5', 'DeepSeek'], help='LLM model used to generate score tensors')
 parser.add_argument('--describe_nums', type=int, default=40, choices=[20, 40, 60, 80], help='Number of textual descriptions used during preprocessing')
+parser.add_argument('--conf_strategy', type=str, default='robust', choices=CONF_STRATEGIES, help='Confidence strategy for self-consistency filtering')
+parser.add_argument('--conf_teacher_temp', type=float, default=1.0, help='Temperature to soften teacher probabilities before confidence evaluation')
+parser.add_argument('--use_symgd', dest='use_symgd', action='store_true', help='Enable Symmetric Gradient guidance (default)')
+parser.add_argument('--no_symgd', dest='use_symgd', action='store_false', help='Disable Symmetric Gradient guidance')
+parser.set_defaults(use_symgd=True)
+parser.add_argument('--symgd_mode', type=str, default='full', choices=['full', 'ul_only'], help='full: apply SymGD to UL and LU; ul_only: constrain to unlabeled CutMix branch only')
+parser.add_argument('--dc_distance_mode', type=str, default='prototype', choices=['prototype','sqrt_prod'], help='Distance mode for domain curriculum: prototype (L2 to labeled prototype) or sqrt_prod (sqrt(delta_L * delta_U))')
+# Piecewise threshold (curriculum-adaptive pseudo-label threshold)
+parser.add_argument('--enable_piecewise_tau', action='store_true', help='Enable piecewise threshold that increases with curriculum stages')
+parser.add_argument('--tau_min', type=float, default=0.80, help='Minimum threshold at initial curriculum stage (default: 0.80)')
+parser.add_argument('--tau_max', type=float, default=0.95, help='Maximum threshold at final curriculum stage (default: 0.95)')
+# Curriculum expansion controls: replace numeric weights with boolean switches.
+parser.add_argument('--use_curr_conf', action='store_true', help='Require current-partition confidence to meet curr_conf_threshold to allow expansion')
+parser.add_argument('--use_next_conf', action='store_true', help='Require next-partition confidence to meet expand_conf_threshold to allow expansion')
 args = parser.parse_args()
 
 
 def get_current_consistency_weight(epoch):
     # Consistency ramp-up from https://arxiv.org/abs/1610.02242
     return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
+
+def get_piecewise_threshold(current_stage, num_stages, tau_min, tau_max):
+    """
+    Calculate piecewise threshold based on curriculum stage.
+    
+    Args:
+        current_stage: Current curriculum stage (0-indexed)
+        num_stages: Total number of curriculum stages
+        tau_min: Minimum threshold at stage 0
+        tau_max: Maximum threshold at final stage
+    
+    Returns:
+        threshold: Linearly interpolated threshold for current stage
+    
+    Formula: tau_k = tau_min + (k / (N-1)) * (tau_max - tau_min)
+    """
+    if num_stages <= 1:
+        return tau_max  # Single stage: use max threshold
+    
+    # Clamp stage to valid range
+    stage = max(0, min(current_stage, num_stages - 1))
+    
+    # Linear interpolation
+    threshold = tau_min + (stage / (num_stages - 1)) * (tau_max - tau_min)
+    
+    return threshold
 
 def update_ema_variables(model, ema_model, alpha, global_step):
     # teacher network: ema_model
@@ -260,60 +143,6 @@ def update_ema_variables(model, ema_model, alpha, global_step):
     alpha = min(1 - 1 / (global_step + 1), alpha)
     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
         ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
-
-def cycle(iterable: Iterable):
-    """Make an iterator returning elements from the iterable.
-
-    .. note::
-        **DO NOT** use `itertools.cycle` on `DataLoader(shuffle=True)`.\n
-        Because `itertools.cycle` saves a copy of each element, batches are shuffled only at the first epoch. \n
-        See https://docs.python.org/3/library/itertools.html#itertools.cycle for more details.
-    """
-    while True:
-        for x in iterable:
-            yield x
-
-
-def compute_self_consistency(args, unet_model, ema_unet_model, dataloader):
-    """Compute EMA/student self-consistency Dice over given dataloader."""
-    if dataloader is None:
-        return None
-    unet_model.eval()
-    ema_unet_model.eval()
-    total_self_conf = []
-    for sample in dataloader:
-        data = sample['unet_size_img'].cuda()
-        with torch.no_grad():
-            student_pred = unet_model(data)
-            student_prob = torch.softmax(student_pred, dim=1)
-            student_prob, student_label = torch.max(student_prob, dim=1)
-
-            teacher_pred = ema_unet_model(data)
-            teacher_prob = torch.softmax(teacher_pred, dim=1)
-            teacher_prob, teacher_label = torch.max(teacher_prob, dim=1)
-
-        if args.dataset == 'fundus':
-            student_label = to_2d(student_label)
-            teacher_label = to_2d(teacher_label)
-            self_conf = dice_calcu[args.dataset](
-                np.asarray(student_label.cpu()),
-                teacher_label.cpu(),
-                ret_arr=True,
-            )
-        else:
-            self_conf = dice_calcu[args.dataset](
-                np.asarray(student_label.clone().cpu()),
-                teacher_label.clone().cpu(),
-                ret_arr=True,
-            )
-        self_conf = np.mean(self_conf, axis=0)
-        total_self_conf.extend(self_conf)
-
-    unet_model.train()
-    ema_unet_model.train()
-    if not total_self_conf:
-        return None
-    return float(np.mean(total_self_conf))
 
 @torch.no_grad()
 def test(args, model, test_dataloader, iteration, writer):
@@ -457,58 +286,6 @@ def test(args, model, test_dataloader, iteration, writer):
     logging.info(text)
     return val_dice
     
-def to_2d(input_tensor):
-    input_tensor = input_tensor.unsqueeze(1)
-    tensor_list = []
-    temp_prob = input_tensor == torch.ones_like(input_tensor)
-    tensor_list.append(temp_prob)
-    temp_prob2 = input_tensor > torch.zeros_like(input_tensor)
-    tensor_list.append(temp_prob2)
-    output_tensor = torch.cat(tensor_list, dim=1)
-    return output_tensor.float()
-
-def to_3d(input_tensor):
-    input_tensor = input_tensor.unsqueeze(1)
-    tensor_list = []
-    for i in range(1, 4):
-        temp_prob = input_tensor == i * torch.ones_like(input_tensor)
-        tensor_list.append(temp_prob)
-    output_tensor = torch.cat(tensor_list, dim=1)
-    return output_tensor.float()
-
-def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):
-    mask = torch.zeros(img_size, img_size).cuda()
-    if random.random() > p:
-        return mask
-
-    size = np.random.uniform(size_min, size_max) * img_size * img_size
-    while True:
-        ratio = np.random.uniform(ratio_1, ratio_2)
-        cutmix_w = int(np.sqrt(size / ratio))
-        cutmix_h = int(np.sqrt(size * ratio))
-        x = np.random.randint(0, img_size)
-        y = np.random.randint(0, img_size)
-
-        if x + cutmix_w <= img_size and y + cutmix_h <= img_size:
-            break
-
-    mask[y:y + cutmix_h, x:x + cutmix_w] = 1
-
-    return mask
-
-class statistics(object):
-    """Computes and stores the average and current value"""
-
-    def __init__(self):
-        self.record = []
-        self.num = 0
-        self.avg = 0
-
-    def update(self, val):
-        self.record.append(val)
-        self.num += 1
-        self.avg = sum(self.record) / self.num
-
 def train(args, snapshot_path):
     writer = SummaryWriter(snapshot_path + '/log')
     
@@ -650,6 +427,7 @@ def train(args, snapshot_path):
         unlabeled_scores,
         unlabeled_indices,
         num_partitions=curriculum_partitions,
+        distance_mode=getattr(args, 'dc_distance_mode', 'prototype'),
     )
     curriculum_sampler = DomainDistanceCurriculumSampler(
         partitions,
@@ -686,6 +464,25 @@ def train(args, snapshot_path):
     iter_num = 0
     last_stage_update_iter = 0
 
+    # Initialize threshold based on piecewise strategy
+    if args.enable_piecewise_tau:
+        threshold = get_piecewise_threshold(
+            current_stage=curriculum_sampler.stage,
+            num_stages=args.dc_parts,
+            tau_min=args.tau_min,
+            tau_max=args.tau_max
+        )
+        logging.info(
+            "Piecewise threshold ENABLED: initial stage=%d, threshold=%.4f (tau_min=%.2f, tau_max=%.2f)",
+            curriculum_sampler.stage,
+            threshold,
+            args.tau_min,
+            args.tau_max
+        )
+    else:
+        threshold = args.threshold
+        logging.info("Using fixed threshold: %.4f", threshold)
+
     # set to train
     ce_loss = CrossEntropyLoss(reduction='none')
     softmax, sigmoid, multi = True, False, False
@@ -708,6 +505,17 @@ def train(args, snapshot_path):
     else:
         logging.info("Frequency-domain augmentation DISABLED")
 
+    if args.use_symgd:
+        logging.info("Symmetric Guidance ENABLED (mode=%s)", args.symgd_mode)
+    else:
+        logging.info("Symmetric Guidance DISABLED; UL/LU CutMix branches skipped")
+
+    logging.info(
+        "Confidence strategy: %s (teacher temp=%.2f)",
+        args.conf_strategy,
+        args.conf_teacher_temp,
+    )
+
     # Calculate number of evaluation cycles
     num_eval_cycles = max_iterations // args.num_eval_iter
     
@@ -718,7 +526,6 @@ def train(args, snapshot_path):
     best_avg_dice_iter = -1
     dice_of_best_avg = [0.0] * n_part
 
-    threshold = args.threshold
     scaler = GradScaler()
     amp_cm = autocast if args.amp else contextlib.nullcontext
 
@@ -753,7 +560,7 @@ def train(args, snapshot_path):
         unet_model.train()
         ema_unet_model.train()
         p_bar = tqdm(range(args.num_eval_iter), desc=f'Cycle {eval_cycle+1}/{num_eval_cycles}')
-        unet_ulb_dice_sta = [statistics() for _ in range(n_part)]
+        unet_ulb_dice_sta = [Statistics() for _ in range(n_part)]
         
         for i_batch in range(1, args.num_eval_iter+1):
             # Learning rate schedule: warmup + polynomial decay (matching MiDSS)
@@ -824,66 +631,152 @@ def train(args, snapshot_path):
                 move_transx = lb_unet_size_x_w
 
             with amp_cm():
-                # ========== Teacher Model: 3 forward passes (matching MiDSS) ==========
+                apply_ul = args.symgd_mode in ("full", "ul_only")
+                apply_lu = args.symgd_mode == "full"
+                cutmix_active = apply_ul or apply_lu
+
+                mask_teacher: torch.Tensor | None = None
+                mask_ul: torch.Tensor | None = None
+                mask_lu: torch.Tensor | None = None
+                mask_w: torch.Tensor | None = None
+                ensemble: torch.Tensor | None = None
+                unet_size_img_box: torch.Tensor | None = None
+                unet_size_label_box: torch.Tensor | None = None
+                unet_size_pseudo_label_ul: torch.Tensor | None = None
+                unet_size_pseudo_label_lu: torch.Tensor | None = None
+                pseudo_label_w: torch.Tensor | None = None
+
                 with torch.no_grad():
                     # 1. Original unlabeled image pseudo-labels
                     unet_logits_ulb_x_w = ema_unet_model(ulb_unet_size_x_w)
                     unet_prob_ulb_x_w = torch.softmax(unet_logits_ulb_x_w, dim=1)
                     unet_prob, unet_pseudo_label = torch.max(unet_prob_ulb_x_w, dim=1)
-                    mask = (unet_prob > threshold).unsqueeze(1).float()
-                    
-                    # Generate CutMix box (moved here to be used by teacher)
-                    unet_size_label_box = torch.stack([obtain_cutmix_box(img_size=patch_size, p=1.0) for i in range(len(ulb_unet_size_x_w))], dim=0)
-                    unet_size_img_box = unet_size_label_box.unsqueeze(1)
-                    
-                    # 2. UL mixing (Unlabeled background + Labeled foreground)
-                    ulb_x_w_ul = ulb_unet_size_x_w * (1-unet_size_img_box) + lb_unet_size_x_w * unet_size_img_box
-                    logits_w_ul = ema_unet_model(ulb_x_w_ul)
-                    prob_w_ul = torch.softmax(logits_w_ul, dim=1)
-                    conf_w_ul, pseudo_label_w_ul = torch.max(prob_w_ul, dim=1)
-                    mask_w_ul = (conf_w_ul > threshold).unsqueeze(1).float()
-                    
-                    # 3. LU mixing (Labeled background + Unlabeled foreground)
-                    ulb_x_w_lu = lb_unet_size_x_w * (1-unet_size_img_box) + ulb_unet_size_x_w * unet_size_img_box
-                    logits_w_lu = ema_unet_model(ulb_x_w_lu)
-                    prob_w_lu = torch.softmax(logits_w_lu, dim=1)
-                    conf_w_lu, pseudo_label_w_lu = torch.max(prob_w_lu, dim=1)
-                    mask_w_lu = (conf_w_lu > threshold).unsqueeze(1).float()
-                    
-                    # Merge UL and LU pseudo-labels
-                    mask_w = mask_w_ul * (1-unet_size_img_box) + mask_w_lu * unet_size_img_box
-                    pseudo_label_w = (pseudo_label_w_ul * (1-unet_size_label_box) + 
-                                      pseudo_label_w_lu * unet_size_label_box).long()
-                    
-                    # Ensemble filtering: filter out inconsistent predictions
-                    ensemble = (pseudo_label_w == unet_pseudo_label).unsqueeze(1).float() * mask
-                    mask_w[ensemble == 0] = 0
-                
-                # Prepare three types of masks (matching MiDSS)
-                mask_ul = mask.clone()
-                mask_ul[unet_size_img_box.expand(mask_ul.shape) == 1] = 1  # CutMix region fully trusted
-                
-                mask_lu = mask.clone()
-                mask_lu[unet_size_img_box.expand(mask_lu.shape) == 0] = 1  # Non-CutMix region fully trusted
-                
-                # Prepare three types of mixing for student
-                # When use_freq_aug is enabled, use move_transx (freq-augmented labeled images)
-                # Otherwise, use original lb_unet_size_x_w
-                # 1. UL mixing: unlabeled strong aug + labeled (possibly freq-augmented)
-                ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1-unet_size_img_box) + move_transx * unet_size_img_box
-                unet_size_pseudo_label_ul = (unet_pseudo_label * (1-unet_size_label_box) + 
-                                              lb_unet_size_mask * unet_size_label_box).long()
-                
-                # 2. LU mixing: labeled (possibly freq-augmented) + unlabeled strong aug
-                ulb_unet_size_x_s_lu = move_transx * (1-unet_size_img_box) + ulb_unet_size_x_s * unet_size_img_box
-                unet_size_pseudo_label_lu = (lb_unet_size_mask * (1-unet_size_label_box) + 
-                                              unet_pseudo_label * unet_size_label_box).long()
-                
-                # ========== Student Model: 4 forward passes ==========
+                    mask_teacher = (unet_prob > threshold).unsqueeze(1).float()
+
+                    mask_w = mask_teacher.clone()
+                    pseudo_label_w = unet_pseudo_label.long()
+                    ensemble = torch.ones_like(mask_teacher)
+                    mask_ul = torch.zeros_like(mask_teacher)
+                    mask_lu = torch.zeros_like(mask_teacher)
+
+                    if cutmix_active:
+                        # Generate CutMix box (only used when SymGD is active)
+                        device = lb_unet_size_x_w.device
+                        unet_size_label_box = torch.stack(
+                            [
+                                obtain_cutmix_box(
+                                    img_size=patch_size,
+                                    p=1.0,
+                                    device=device,
+                                )
+                                for _ in range(len(ulb_unet_size_x_w))
+                            ],
+                            dim=0,
+                        )
+                        unet_size_img_box = unet_size_label_box.unsqueeze(1)
+
+                        if apply_ul:
+                            # UL mixing (Unlabeled background + Labeled foreground)
+                            ulb_x_w_ul = ulb_unet_size_x_w * (1 - unet_size_img_box) + lb_unet_size_x_w * unet_size_img_box
+                            logits_w_ul = ema_unet_model(ulb_x_w_ul)
+                            prob_w_ul = torch.softmax(logits_w_ul, dim=1)
+                            conf_w_ul, pseudo_label_w_ul = torch.max(prob_w_ul, dim=1)
+                            mask_w_ul = (conf_w_ul > threshold).unsqueeze(1).float()
+
+                            mask_ul = mask_teacher.clone()
+                            mask_ul[unet_size_img_box.expand_as(mask_ul) == 1] = 1
+                            unet_size_pseudo_label_ul = (
+                                unet_pseudo_label * (1 - unet_size_label_box)
+                                + lb_unet_size_mask * unet_size_label_box
+                            ).long()
+                        else:
+                            mask_w_ul = None
+
+                        if apply_lu:
+                            # LU mixing (Labeled background + Unlabeled foreground)
+                            ulb_x_w_lu = lb_unet_size_x_w * (1 - unet_size_img_box) + ulb_unet_size_x_w * unet_size_img_box
+                            logits_w_lu = ema_unet_model(ulb_x_w_lu)
+                            prob_w_lu = torch.softmax(logits_w_lu, dim=1)
+                            conf_w_lu, pseudo_label_w_lu = torch.max(prob_w_lu, dim=1)
+                            mask_w_lu = (conf_w_lu > threshold).unsqueeze(1).float()
+
+                            mask_lu = mask_teacher.clone()
+                            mask_lu[unet_size_img_box.expand_as(mask_lu) == 0] = 1
+                            unet_size_pseudo_label_lu = (
+                                lb_unet_size_mask * (1 - unet_size_label_box)
+                                + unet_pseudo_label * unet_size_label_box
+                            ).long()
+                        else:
+                            mask_w_lu = None
+
+                        if apply_ul and apply_lu:
+                            mask_w = mask_w_ul * (1 - unet_size_img_box) + mask_w_lu * unet_size_img_box
+                            pseudo_label_w = (
+                                pseudo_label_w_ul * (1 - unet_size_label_box)
+                                + pseudo_label_w_lu * unet_size_label_box
+                            ).long()
+                        elif apply_ul:
+                            mask_w = mask_w_ul
+                            pseudo_label_w = pseudo_label_w_ul.long()
+                        elif apply_lu:
+                            mask_w = mask_w_lu
+                            pseudo_label_w = pseudo_label_w_lu.long()
+
+                    if args.use_symgd:
+                        ensemble = (pseudo_label_w == unet_pseudo_label).unsqueeze(1).float() * mask_teacher
+                        mask_w = mask_w.clone()
+                        mask_w[ensemble == 0] = 0
+                    else:
+                        ensemble = torch.ones_like(mask_teacher)
+
+                mask = mask_teacher
+                device = lb_unet_size_x_w.device
+                zero = lb_unet_size_x_w.new_tensor(0.0)
+
+                # ========== Student Model Forward Passes ==========
                 unet_logits_lb_x_w = unet_model(lb_unet_size_x_w)
-                unet_logits_ulb_x_s_ul = unet_model(ulb_unet_size_x_s_ul)
-                unet_logits_ulb_x_s_lu = unet_model(ulb_unet_size_x_s_lu)
+
+                unet_unsup_loss_ul = zero
+                if apply_ul and unet_size_img_box is not None and unet_size_pseudo_label_ul is not None:
+                    ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1 - unet_size_img_box) + move_transx * unet_size_img_box
+                    unet_logits_ulb_x_s_ul = unet_model(ulb_unet_size_x_s_ul)
+                    unet_unsup_loss_ul = (
+                        ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * mask_ul.squeeze(1)
+                    ).mean() + dice_loss(
+                        unet_logits_ulb_x_s_ul,
+                        unet_size_pseudo_label_ul.unsqueeze(1),
+                        mask=mask_ul,
+                        softmax=softmax,
+                        sigmoid=sigmoid,
+                        multi=multi,
+                    )
+
+                unet_unsup_loss_lu = zero
+                if apply_lu and unet_size_img_box is not None and unet_size_pseudo_label_lu is not None:
+                    ulb_unet_size_x_s_lu = move_transx * (1 - unet_size_img_box) + ulb_unet_size_x_s * unet_size_img_box
+                    unet_logits_ulb_x_s_lu = unet_model(ulb_unet_size_x_s_lu)
+                    unet_unsup_loss_lu = (
+                        ce_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu) * mask_lu.squeeze(1)
+                    ).mean() + dice_loss(
+                        unet_logits_ulb_x_s_lu,
+                        unet_size_pseudo_label_lu.unsqueeze(1),
+                        mask=mask_lu,
+                        softmax=softmax,
+                        sigmoid=sigmoid,
+                        multi=multi,
+                    )
+
                 unet_logits_ulb_x_s = unet_model(ulb_unet_size_x_s)
+                unet_unsup_loss_s = (
+                    ce_loss(unet_logits_ulb_x_s, pseudo_label_w) * mask_w.squeeze(1)
+                ).mean() + dice_loss(
+                    unet_logits_ulb_x_s,
+                    pseudo_label_w.unsqueeze(1),
+                    mask=mask_w,
+                    softmax=softmax,
+                    sigmoid=sigmoid,
+                    multi=multi,
+                )
                 
                 # Calculate dice on unlabeled data for monitoring
                 if args.dataset == 'fundus':
@@ -943,11 +836,24 @@ def train(args, snapshot_path):
             if (
                 iter_num % args.expend_test_steps_interval == 0
                 and curriculum_sampler.stage < args.dc_parts
-            ):
-                next_conf = compute_self_consistency(args, unet_model, ema_unet_model, test_expend_dataloader)
+            ):  
+                use_curr = getattr(args, 'use_curr_conf', False)
+                use_next = getattr(args, 'use_next_conf', False)
+
+                next_conf = None
+                if use_next:
+                    next_conf = compute_self_consistency(
+                        args,
+                        unet_model,
+                        ema_unet_model,
+                        test_expend_dataloader,
+                        args.dataset,
+                        dice_calcu,
+                        to_2d,
+                    )
 
                 curr_conf = None
-                if args.curr_conf_weight > 0:
+                if use_curr:
                     active_indices = curriculum_sampler.get_active_indices()
                     if active_indices:
                         sample_count = min(args.curr_conf_samples, len(active_indices))
@@ -961,7 +867,15 @@ def train(args, snapshot_path):
                                 num_workers=2,
                                 pin_memory=True,
                             )
-                            curr_conf = compute_self_consistency(args, unet_model, ema_unet_model, current_loader)
+                            curr_conf = compute_self_consistency(
+                                args,
+                                unet_model,
+                                ema_unet_model,
+                                current_loader,
+                                args.dataset,
+                                dice_calcu,
+                                to_2d,
+                            )
 
                 if next_conf is not None:
                     logging.info(
@@ -979,25 +893,53 @@ def train(args, snapshot_path):
                     )
 
                 elapsed_since_stage_update = iter_num - last_stage_update_iter
-                combined_score = 0.0
-                total_weight = 0.0
 
-                if args.curr_conf_weight > 0 and curr_conf is not None:
-                    combined_score += args.curr_conf_weight * (curr_conf - args.curr_conf_threshold)
-                    total_weight += args.curr_conf_weight
+                # New curriculum expansion gate:
+                # - Use boolean switches (--use_curr_conf, --use_next_conf) to decide which
+                #   confidence checks are required.
+                # - If both switches are enabled, require BOTH current and next partition
+                #   confidences to meet their respective thresholds to allow expansion.
+                # - If only one switch is enabled, require that single metric to meet its threshold.
+                # - If neither is enabled, default to using next-partition check (log a warning).
+                
+                if not use_curr and not use_next:
+                    use_next = True
+                    logging.warning(
+                        "Neither --use_curr_conf nor --use_next_conf enabled; defaulting to --use_next_conf"
+                    )
 
-                if args.expand_conf_weight > 0 and next_conf is not None:
-                    combined_score += args.expand_conf_weight * (next_conf - args.expand_conf_threshold)
-                    total_weight += args.expand_conf_weight
+                curr_ok = True
+                next_ok = True
+                if use_curr:
+                    curr_ok = (curr_conf is not None) and (curr_conf >= args.curr_conf_threshold)
+                if use_next:
+                    next_ok = (next_conf is not None) and (next_conf >= args.expand_conf_threshold)
 
                 should_expand = False
-                if total_weight > 0 and combined_score >= 0.0:
-                    should_expand = True
-                    logging.info(
-                        "Curriculum expansion triggered by weighted confidence (score=%.4f, weight=%.2f)",
-                        combined_score,
-                        total_weight,
-                    )
+                if use_curr and use_next:
+                    if curr_ok and next_ok:
+                        should_expand = True
+                        logging.info(
+                            "Curriculum expansion triggered: both current and next partition confidences meet thresholds (curr=%.4f, next=%.4f)",
+                            curr_conf if curr_conf is not None else float('nan'),
+                            next_conf if next_conf is not None else float('nan'),
+                        )
+                elif use_curr:
+                    if curr_ok:
+                        should_expand = True
+                        logging.info(
+                            "Curriculum expansion triggered by current-partition confidence (curr=%.4f >= %.4f)",
+                            curr_conf,
+                            args.curr_conf_threshold,
+                        )
+                elif use_next:
+                    if next_ok:
+                        should_expand = True
+                        logging.info(
+                            "Curriculum expansion triggered by next-partition confidence (next=%.4f >= %.4f)",
+                            next_conf,
+                            args.expand_conf_threshold,
+                        )
 
                 if not should_expand and elapsed_since_stage_update >= args.expend_max_steps:
                     should_expand = True
@@ -1010,6 +952,30 @@ def train(args, snapshot_path):
                     prev_stage = curriculum_sampler.stage
                     curriculum_sampler.expand()
                     last_stage_update_iter = iter_num
+
+                    # Update threshold if piecewise strategy is enabled
+                    if args.enable_piecewise_tau:
+                        old_threshold = threshold
+                        threshold = get_piecewise_threshold(
+                            current_stage=curriculum_sampler.stage,
+                            num_stages=args.dc_parts,
+                            tau_min=args.tau_min,
+                            tau_max=args.tau_max
+                        )
+                        logging.info(
+                            "Curriculum expanded: stage %d→%d, threshold updated: %.4f→%.4f",
+                            prev_stage,
+                            curriculum_sampler.stage,
+                            old_threshold,
+                            threshold
+                        )
+                    else:
+                        logging.info(
+                            "Curriculum sampler advanced from stage %d to %d at iteration %d",
+                            prev_stage,
+                            curriculum_sampler.stage,
+                            iter_num,
+                        )
 
                     logging.info(
                         "Curriculum sampler advanced from stage %d to %d at iteration %d",
@@ -1058,6 +1024,8 @@ def train(args, snapshot_path):
             writer.add_scalar('train/cons_weight_term', cons_term.item(), iter_num)
             writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
             writer.add_scalar('train/learning_rate', unet_optimizer.param_groups[0]['lr'], iter_num)
+            writer.add_scalar('train/threshold', threshold, iter_num)
+            writer.add_scalar('train/curriculum_stage', curriculum_sampler.stage, iter_num)
             if p_bar is not None:
                 p_bar.update()
 
