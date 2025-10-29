@@ -63,6 +63,55 @@ def _fg_ratio_from_argmax(argmax_label: torch.Tensor) -> torch.Tensor:
     return (argmax_label != 0).float().mean(dim=(1, 2))
 
 
+def _kl_divergence(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """計算 KL 散度 KL(p || q) per sample."""
+    # p, q shape: [B, C, H, W]
+    # 確保 p, q 總和為 1 (如果輸入是 logits 需要先 softmax)
+    kl_pixel = (p * (p.clamp_min(eps).log() - q.clamp_min(eps).log())).sum(dim=1) # [B, H, W]
+    # 在空間維度上取平均得到每個樣本的 KL
+    kl_sample = kl_pixel.mean(dim=(1, 2)) # [B]
+    return kl_sample
+
+def _js_divergence(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """計算 Jensen-Shannon 散度 JS(p || q) per sample."""
+    # 計算平均分佈 M
+    m = 0.5 * (p + q)
+    # 計算 JS 散度
+    js = 0.5 * _kl_divergence(p, m, eps) + 0.5 * _kl_divergence(q, m, eps) # [B]
+    return js
+
+@register_conf("js_teacher_student") # 註冊新策略
+def js_teacher_student_confidence(
+    args,
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    dataset_name: str,  # 添加以匹配签名
+    dice_calcu: Dict[str, Callable],  # 添加以匹配签名
+    to_2d_fn: Optional[Callable],  # 添加以匹配签名
+    **_,
+) -> torch.Tensor:
+    """
+    基於教師-學生 Softmax 輸出的 JS 散度計算置信度分數。
+    Confidence = 1 - JS / ln(2)
+    """
+    # 1. 獲取教師和學生的 Softmax 概率，應用溫度
+    #    注意：同時對學生應用溫度是可選的，但可以使比較更“公平”
+    temperature = getattr(args, "conf_teacher_temp", 1.0) # 沿用之前的溫度參數
+    student_prob = torch.softmax(student_logits / temperature, dim=1)
+    teacher_prob = torch.softmax(teacher_logits / temperature, dim=1)
+
+    # 2. 計算 JS 散度
+    js_div = _js_divergence(teacher_prob, student_prob) # shape [B]
+
+    # 3. 將 JS 散度 (範圍 [0, ln2]) 轉換為置信度 (範圍 [0, 1])
+    #    JS = 0 (完全一致) => Confidence = 1
+    #    JS = ln2 (最大差異) => Confidence = 0
+    max_js = float(np.log(2.0))
+    # 使用 clamp_max 防止因數值誤差導致 js > ln(2)
+    confidence = 1.0 - js_div.clamp_max(max_js) / max_js # shape [B]
+
+    return confidence
+
 @register_conf("dice")
 def dice_confidence(
     args,  # noqa: D417 - pass-through for extensibility
@@ -124,6 +173,39 @@ def robust_confidence(
 
     robust = dice_scores * (1.0 - entropy) * torch.sqrt(fg_ratio.clamp_min(1e-6))
     return robust
+
+
+@register_conf("robust_no_fg")
+def robust_no_fg_confidence(
+    args,
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    dataset_name: str,
+    dice_calcu: Dict[str, Callable],
+    to_2d_fn: Optional[Callable],
+    **_,
+) -> torch.Tensor:
+    """Dice * (1 - entropy) used for confidence-aware ramps (without fg_ratio)."""
+
+    dice_scores = dice_confidence(
+        args,
+        student_logits,
+        teacher_logits,
+        dataset_name,
+        dice_calcu,
+        to_2d_fn,
+    )
+
+    temperature = getattr(args, "conf_teacher_temp", 1.0)
+    teacher_prob = torch.softmax(teacher_logits / temperature, dim=1)
+
+    entropy = _normalized_entropy(teacher_prob)
+
+    robust_no_fg = dice_scores * (1.0 - entropy)
+    return robust_no_fg
+
+
+
 
 
 def compute_self_consistency(

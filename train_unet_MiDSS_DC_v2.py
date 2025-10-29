@@ -164,7 +164,7 @@ parser.add_argument('--describe_nums', type=int, default=40,
                     help='Number of textual descriptions for preprocessing')
 parser.add_argument('--conf_strategy', type=str, default='robust',
                     choices=CONF_STRATEGIES,
-                    help='Confidence strategy for self-consistency filtering')
+                    help='[dice, robust, robust_no_fg, js_teacher_student]')
 parser.add_argument('--conf_teacher_temp', type=float, default=1.0,
                     help='Temperature for softening teacher probabilities')
 
