@@ -42,132 +42,67 @@ if not CONF_STRATEGIES:
     raise RuntimeError("No confidence strategies registered. Check utils.conf module registration.")
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', type=str, default='prostate', choices=['fundus', 'prostate', 'MNMS', 'BUSI'])
+parser.add_argument("--save_name", type=str, default="", help="experiment_name")
+parser.add_argument("--overwrite", action='store_true')
+parser.add_argument("--max_iterations", type=int, default=None, help="maximum iterations to train, if not set, will use dataset default")
+parser.add_argument('--num_eval_iter', type=int, default=500)
+parser.add_argument("--deterministic", type=int, default=1, help="whether use deterministic training")
+parser.add_argument("--base_lr", type=float, default=None, help="segmentation network learning rate, if not set, will use default 0.03 without warmup")
+parser.add_argument("--seed", type=int, default=1337, help="random seed")
+parser.add_argument("--gpu", type=str, default='0')
+parser.add_argument("--threshold", type=float, default=0.95, help="confidence threshold for using pseudo-labels",)
 
-# ==================== Basic Configuration ====================
-parser.add_argument('--dataset', type=str, default='prostate', 
-                    choices=['fundus', 'prostate', 'MNMS', 'BUSI'],
-                    help='Dataset to use for training')
-parser.add_argument("--save_name", type=str, default="", 
-                    help="Experiment name for saving checkpoints and logs")
-parser.add_argument("--overwrite", action='store_true',
-                    help="Overwrite existing experiment directory")
-parser.add_argument('--save_model', action='store_true',
-                    help='Save best model checkpoints during training')
-parser.add_argument("--gpu", type=str, default='0',
-                    help='GPU device ID to use')
-parser.add_argument("--seed", type=int, default=1337,
-                    help="Random seed for reproducibility")
-parser.add_argument("--deterministic", type=int, default=1,
-                    help="Whether to use deterministic training")
+parser.add_argument('--amp', type=int, default=1, help='use mixed precision training or not')
 
-# ==================== Training Schedule ====================
-parser.add_argument("--max_iterations", type=int, default=None,
-                    help="Maximum iterations to train (auto-set per dataset if None)")
-parser.add_argument('--num_eval_iter', type=int, default=500,
-                    help='Evaluate model every N iterations')
-parser.add_argument("--base_lr", type=float, default=None,
-                    help="Base learning rate (default: 0.03 with polynomial decay if None)")
-parser.add_argument('--warmup', action='store_true',
-                    help='Enable learning rate warmup from lower lr to base_lr')
-parser.add_argument('--warmup_period', type=int, default=2000,
-                    help='Number of warmup iterations (only used when --warmup is enabled)')
-parser.add_argument('--amp', type=int, default=1,
-                    help='Use mixed precision training (1: enabled, 0: disabled)')
+# Optional: enable MiDSS-style frequency-domain augmentation (kept separate from geometric/color transforms)
+parser.add_argument('--use_freq_aug', action='store_true', help='Enable frequency-domain augmentation (MiDSS style)')
+parser.add_argument('--LB', type=float, default=0.01, help='Low-frequency band ratio for frequency augmentation (default: 0.01)')
 
-# ==================== Data Configuration ====================
-parser.add_argument("--label_bs", type=int, default=None,
-                    help="Labeled batch size per GPU (auto-set based on lb_num if None)")
-parser.add_argument("--unlabel_bs", type=int, default=None,
-                    help="Unlabeled batch size per GPU (auto-set based on lb_num if None)")
-parser.add_argument("--test_bs", type=int, default=1,
-                    help='Batch size for evaluation')
-parser.add_argument('--domain_num', type=int, default=6,
-                    help='Total number of domains in dataset')
-parser.add_argument('--lb_domain', type=int, default=1,
-                    help='Domain ID to use for labeled data')
-parser.add_argument('--lb_num', type=int, default=40,
-                    help='Number of labeled samples (used when lb_ratio=0)')
-parser.add_argument('--lb_ratio', type=float, default=0,
-                    help='Labeled data ratio of total dataset (overrides lb_num if > 0)')
+parser.add_argument("--label_bs", type=int, default=None, help="labeled_batch_size per gpu, auto-set based on lb_num if not provided")
+parser.add_argument("--unlabel_bs", type=int, default=None, help="unlabeled_batch_size per gpu, auto-set based on lb_num if not provided")
+parser.add_argument("--test_bs", type=int, default=1)
+parser.add_argument('--domain_num', type=int, default=6)
+parser.add_argument('--lb_domain', type=int, default=1)
+parser.add_argument('--lb_num', type=int, default=40)
+parser.add_argument('--lb_ratio', type=float, default=0)
+# costs
+parser.add_argument("--ema_decay", type=float, default=0.99, help="ema_decay")
+parser.add_argument("--consistency", type=float, default=1.0, help="consistency")
+parser.add_argument("--consistency_rampup", type=float, default=200.0, help="consistency_rampup")
 
-# ==================== Data Augmentation ====================
-parser.add_argument('--use_freq_aug', action='store_true',
-                    help='Enable frequency-domain augmentation (MiDSS style)')
-parser.add_argument('--LB', type=float, default=0.01,
-                    help='Low-frequency band ratio for frequency augmentation')
-
-# ==================== Semi-Supervised Learning ====================
-parser.add_argument("--ema_decay", type=float, default=0.99,
-                    help="EMA decay rate for teacher model")
-parser.add_argument("--consistency", type=float, default=1.0,
-                    help="Consistency loss weight")
-parser.add_argument("--consistency_rampup", type=float, default=200.0,
-                    help="Consistency weight ramp-up period (in epochs)")
-
-# ==================== Pseudo-Label Threshold ====================
-parser.add_argument("--threshold", type=float, default=0.95,
-                    help="Fixed confidence threshold for pseudo-labels (used when enable_piecewise_tau=False)")
-parser.add_argument('--enable_piecewise_tau', action='store_true',
-                    help='Enable curriculum-adaptive threshold that increases with stages')
-parser.add_argument('--tau_min', type=float, default=0.80,
-                    help='Minimum threshold at initial curriculum stage (piecewise mode)')
-parser.add_argument('--tau_max', type=float, default=0.95,
-                    help='Maximum threshold at final curriculum stage (piecewise mode)')
-
-# ==================== Symmetric Gradient Guidance (SymGD) ====================
-parser.add_argument('--use_symgd', dest='use_symgd', action='store_true',
-                    help='Enable Symmetric Gradient guidance (default)')
-parser.add_argument('--no_symgd', dest='use_symgd', action='store_false',
-                    help='Disable Symmetric Gradient guidance')
+parser.add_argument('--save_model',action='store_true')
+parser.add_argument('--warmup', action='store_true', help='If activated, warp up the learning from a lower lr to the base_lr')
+parser.add_argument('--warmup_period', type=int, default=5000,
+                    help='Warp up iterations, only valid whrn warmup is activated')
+# domain curriculum
+parser.add_argument('--dc_parts', type=int, default=5, help='Number of curriculum partitions')
+parser.add_argument('--expend_test_samples', type=int, default=32, help='Number of samples to test from expend partition')
+parser.add_argument('--expend_test_steps_interval', type=int, default=100, help='Number of steps between testing on expend partition')
+parser.add_argument('--expend_max_steps', type=int, default=1000, help='Maximum number of steps for expend partition')
+parser.add_argument('--expand_conf_threshold', type=float, default=0.6, help='Confidence threshold for expanding curriculum partition')
+parser.add_argument('--curr_conf_threshold', type=float, default=0.6, help='Confidence threshold for current-partition samples')
+parser.add_argument('--curr_conf_samples', type=int, default=32, help='Number of active-partition samples to draw for confidence test')
+parser.add_argument('--ul_weight', type=float, default=1.0, help='Weight for UL CutMix pseudo-label loss')
+parser.add_argument('--lu_weight', type=float, default=1.0, help='Weight for LU CutMix pseudo-label loss')
+parser.add_argument('--cons_weight', type=float, default=1.0, help='Weight for strong-augmentation consistency loss')
+parser.add_argument('--preprocess_dir', type=str, default=None, help='Override preprocessing root directory for score tensors')
+parser.add_argument('--llm_model', type=str, default='gemini', choices=['gemini', 'GPT5', 'DeepSeek'], help='LLM model used to generate score tensors')
+parser.add_argument('--describe_nums', type=int, default=40, choices=[20, 40, 60, 80], help='Number of textual descriptions used during preprocessing')
+parser.add_argument('--conf_strategy', type=str, default='robust', choices=CONF_STRATEGIES, help='Confidence strategy for self-consistency filtering')
+parser.add_argument('--conf_teacher_temp', type=float, default=1.0, help='Temperature to soften teacher probabilities before confidence evaluation')
+parser.add_argument('--use_symgd', dest='use_symgd', action='store_true', help='Enable Symmetric Gradient guidance (default)')
+parser.add_argument('--no_symgd', dest='use_symgd', action='store_false', help='Disable Symmetric Gradient guidance')
 parser.set_defaults(use_symgd=True)
-parser.add_argument('--symgd_mode', type=str, default='full',
-                    choices=['full', 'ul_only'],
-                    help='SymGD mode: full (UL+LU) or ul_only (UL only)')
-parser.add_argument('--ul_weight', type=float, default=1.0,
-                    help='Weight for UL CutMix pseudo-label loss')
-parser.add_argument('--lu_weight', type=float, default=1.0,
-                    help='Weight for LU CutMix pseudo-label loss')
-parser.add_argument('--cons_weight', type=float, default=1.0,
-                    help='Weight for strong-augmentation consistency loss')
-
-# ==================== Domain Curriculum Learning ====================
-parser.add_argument('--dc_parts', type=int, default=5,
-                    help='Number of curriculum partitions')
-parser.add_argument('--dc_distance_mode', type=str, default='prototype',
-                    choices=['prototype', 'sqrt_prod'],
-                    help='Distance metric for curriculum: prototype (L2) or sqrt_prod')
-parser.add_argument('--expend_test_samples', type=int, default=32,
-                    help='Number of samples to test from next partition')
-parser.add_argument('--expend_test_steps_interval', type=int, default=100,
-                    help='Test next partition every N steps')
-parser.add_argument('--expend_max_steps', type=int, default=1000,
-                    help='Maximum steps before forcing curriculum expansion')
-parser.add_argument('--use_curr_conf', action='store_true',
-                    help='Require current-partition confidence to meet threshold for expansion')
-parser.add_argument('--curr_conf_threshold', type=float, default=0.6,
-                    help='Confidence threshold for current partition samples')
-parser.add_argument('--curr_conf_samples', type=int, default=32,
-                    help='Number of current-partition samples to test for confidence')
-parser.add_argument('--use_next_conf', action='store_true',
-                    help='Require next-partition confidence to meet threshold for expansion')
-parser.add_argument('--expand_conf_threshold', type=float, default=0.6,
-                    help='Confidence threshold for next partition expansion')
-
-# ==================== Preprocessing & Confidence Strategy ====================
-parser.add_argument('--preprocess_dir', type=str, default=None,
-                    help='Override preprocessing directory for score tensors')
-parser.add_argument('--llm_model', type=str, default='gemini',
-                    choices=['gemini', 'GPT5', 'DeepSeek'],
-                    help='LLM model used to generate score tensors')
-parser.add_argument('--describe_nums', type=int, default=40,
-                    choices=[20, 40, 60, 80],
-                    help='Number of textual descriptions for preprocessing')
-parser.add_argument('--conf_strategy', type=str, default='robust',
-                    choices=CONF_STRATEGIES,
-                    help='Confidence strategy for self-consistency filtering')
-parser.add_argument('--conf_teacher_temp', type=float, default=1.0,
-                    help='Temperature for softening teacher probabilities')
-
+parser.add_argument('--symgd_mode', type=str, default='full', choices=['full', 'ul_only'], help='full: apply SymGD to UL and LU; ul_only: constrain to unlabeled CutMix branch only')
+parser.add_argument('--dc_distance_mode', type=str, default='prototype', choices=['prototype','sqrt_prod'], help='Distance mode for domain curriculum: prototype (L2 to labeled prototype) or sqrt_prod (sqrt(delta_L * delta_U))')
+# Piecewise threshold (curriculum-adaptive pseudo-label threshold)
+parser.add_argument('--enable_piecewise_tau', action='store_true', help='Enable piecewise threshold that increases with curriculum stages')
+parser.add_argument('--tau_min', type=float, default=0.80, help='Minimum threshold at initial curriculum stage (default: 0.80)')
+parser.add_argument('--tau_max', type=float, default=0.95, help='Maximum threshold at final curriculum stage (default: 0.95)')
+# Curriculum expansion controls: replace numeric weights with boolean switches.
+parser.add_argument('--use_curr_conf', action='store_true', help='Require current-partition confidence to meet curr_conf_threshold to allow expansion')
+parser.add_argument('--use_next_conf', action='store_true', help='Require next-partition confidence to meet expand_conf_threshold to allow expansion')
 args = parser.parse_args()
 
 
@@ -233,8 +168,8 @@ def test(args, model, test_dataloader, iteration, writer):
         domain_val_dc, domain_val_jc, domain_val_hd, domain_val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
         domain_code = i+1
         for batch_num,sample in enumerate(cur_dataloader):
-            # print(f"  Evaluating domain {domain_code}, batch {batch_num+1}/{len(cur_dataloader)}")
-            # print(f"    Sample dc code: {sample['dc'][0].item()}")
+            print(f"  Evaluating domain {domain_code}, batch {batch_num+1}/{len(cur_dataloader)}")
+            print(f"    Sample dc code: {sample['dc'][0].item()}")
             assert(domain_code == sample['dc'][0].item())
             mask = sample['label']
             if args.dataset == 'fundus':
@@ -959,84 +894,60 @@ def train(args, snapshot_path):
 
                 elapsed_since_stage_update = iter_num - last_stage_update_iter
 
-                # ========== Curriculum Expansion Gate ==========
-                # Determine whether to expand curriculum based on confidence metrics.
-                # 
-                # Expansion Criteria:
-                #   1. Confidence-based (configurable):
-                #      - If --use_curr_conf: require current partition conf >= curr_conf_threshold
-                #      - If --use_next_conf: require next partition conf >= expand_conf_threshold
-                #      - If both enabled: require BOTH conditions (AND logic)
-                #      - If neither enabled: default to next-partition check (with warning)
-                #   
-                #   2. Time-based (fallback):
-                #      - Force expansion if elapsed steps >= expend_max_steps
+                # New curriculum expansion gate:
+                # - Use boolean switches (--use_curr_conf, --use_next_conf) to decide which
+                #   confidence checks are required.
+                # - If both switches are enabled, require BOTH current and next partition
+                #   confidences to meet their respective thresholds to allow expansion.
+                # - If only one switch is enabled, require that single metric to meet its threshold.
+                # - If neither is enabled, default to using next-partition check (log a warning).
                 
-                # Step 1: Ensure at least one confidence criterion is enabled
                 if not use_curr and not use_next:
                     use_next = True
                     logging.warning(
                         "Neither --use_curr_conf nor --use_next_conf enabled; defaulting to --use_next_conf"
                     )
 
-                # Step 2: Evaluate individual confidence conditions
-                curr_ok = True  # Default True (no constraint if not enabled)
-                next_ok = True  # Default True (no constraint if not enabled)
-                
+                curr_ok = True
+                next_ok = True
                 if use_curr:
                     curr_ok = (curr_conf is not None) and (curr_conf >= args.curr_conf_threshold)
-                
                 if use_next:
                     next_ok = (next_conf is not None) and (next_conf >= args.expand_conf_threshold)
 
-                # Step 3: Determine expansion based on enabled criteria
                 should_expand = False
-                
                 if use_curr and use_next:
-                    # Both criteria enabled: require BOTH to be satisfied (AND logic)
                     if curr_ok and next_ok:
                         should_expand = True
                         logging.info(
-                            "✓ Curriculum expansion: BOTH confidences meet thresholds "
-                            "(curr=%.4f >= %.4f, next=%.4f >= %.4f)",
+                            "Curriculum expansion triggered: both current and next partition confidences meet thresholds (curr=%.4f, next=%.4f)",
                             curr_conf if curr_conf is not None else float('nan'),
-                            args.curr_conf_threshold,
                             next_conf if next_conf is not None else float('nan'),
-                            args.expand_conf_threshold,
                         )
-                
                 elif use_curr:
-                    # Only current-partition criterion enabled
                     if curr_ok:
                         should_expand = True
                         logging.info(
-                            "✓ Curriculum expansion: current-partition confidence meets threshold "
-                            "(curr=%.4f >= %.4f)",
+                            "Curriculum expansion triggered by current-partition confidence (curr=%.4f >= %.4f)",
                             curr_conf,
                             args.curr_conf_threshold,
                         )
-                
                 elif use_next:
-                    # Only next-partition criterion enabled
                     if next_ok:
                         should_expand = True
                         logging.info(
-                            "✓ Curriculum expansion: next-partition confidence meets threshold "
-                            "(next=%.4f >= %.4f)",
+                            "Curriculum expansion triggered by next-partition confidence (next=%.4f >= %.4f)",
                             next_conf,
                             args.expand_conf_threshold,
                         )
 
-                # Step 4: Fallback expansion based on maximum elapsed steps
                 if not should_expand and elapsed_since_stage_update >= args.expend_max_steps:
                     should_expand = True
                     logging.info(
-                        "✓ Curriculum expansion: maximum steps reached (elapsed=%d >= %d)",
+                        "Curriculum expansion triggered by max steps (elapsed=%d)",
                         elapsed_since_stage_update,
-                        args.expend_max_steps,
                     )
 
-                # Step 5: Execute curriculum expansion
                 if should_expand:
                     prev_stage = curriculum_sampler.stage
                     curriculum_sampler.expand()
@@ -1052,23 +963,26 @@ def train(args, snapshot_path):
                             tau_max=args.tau_max
                         )
                         logging.info(
-                            "→ Curriculum stage advanced: %d→%d (iter %d), threshold: %.4f→%.4f",
+                            "Curriculum expanded: stage %d→%d, threshold updated: %.4f→%.4f",
                             prev_stage,
                             curriculum_sampler.stage,
-                            iter_num,
                             old_threshold,
                             threshold
                         )
                     else:
                         logging.info(
-                            "→ Curriculum stage advanced: %d→%d (iter %d), threshold: %.4f (fixed)",
+                            "Curriculum sampler advanced from stage %d to %d at iteration %d",
                             prev_stage,
                             curriculum_sampler.stage,
                             iter_num,
-                            threshold,
                         )
 
-                    # Prepare next partition test dataset if available
+                    logging.info(
+                        "Curriculum sampler advanced from stage %d to %d at iteration %d",
+                        prev_stage,
+                        curriculum_sampler.stage,
+                        iter_num,
+                    )
                     if curriculum_sampler.stage < len(partitions):
                         next_partition_indices = partitions[curriculum_sampler.stage]
                         if len(next_partition_indices) > args.expend_test_samples:
