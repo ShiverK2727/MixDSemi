@@ -300,41 +300,65 @@ def compute_kl_loss(p, q):
 # (应放在 utils/losses.py 或
 #  train_unet_MiDSS_DC_v2_dunet.py 的 L50 附近)
 def compute_distillation_loss(
-    # --- 学生特征 (来自 UNet) ---
     lb_u_inv: torch.Tensor,
     lb_u_spec: torch.Tensor,
     ulb_u_inv_s: torch.Tensor,
     ulb_u_spec_s: torch.Tensor,
-    # --- 教师特征 (来自 CLIP, 必须已 detach) ---
     v_inv_lb_teacher: torch.Tensor,
     v_spec_lb_teacher: torch.Tensor,
     v_inv_ulb_teacher_w: torch.Tensor,
-    v_spec_ulb_teacher_w: torch.Tensor
+    v_spec_ulb_teacher_w: torch.Tensor,
+    mode: str = "both",
 ) -> torch.Tensor:
-    """
-    计算 CLIP 教师 -> UNet 学生的特征蒸馏损失。
-    (修正版：仅在 L_w 和 U_s 输入上计算)
-    
-    目标：
-    1. L_w (学生) 对齐 L_w (教师)
-    2. U_s (学生) 对齐 U_w (教师)  <-- (核心强弱一致性)
-    """
+    """Cosine-based distillation loss with configurable feature groups."""
 
-    # 内部辅助函数
-    def distillation_loss_helper(student_feat, teacher_feat):
+    def _device(*tensors: torch.Tensor) -> torch.device:
+        for tensor in tensors:
+            if tensor is not None:
+                return tensor.device
+        raise ValueError("At least one tensor required to infer device")
+
+    def _cosine_dist(student_feat: torch.Tensor | None, teacher_feat: torch.Tensor | None) -> torch.Tensor | None:
         if student_feat is None or teacher_feat is None:
-            return torch.tensor(0.0, device=teacher_feat.device, requires_grad=True)
-        student_feat_norm = F.normalize(student_feat, dim=-1)
-        return (1 - torch.sum(student_feat_norm * teacher_feat, dim=1)).mean()
+            return None
+        student_norm = F.normalize(student_feat, dim=-1)
+        teacher_norm = F.normalize(teacher_feat, dim=-1)
+        return (1 - torch.sum(student_norm * teacher_norm, dim=1)).mean()
 
-    loss_distill = torch.tensor(0.0, device=v_inv_lb_teacher.device)
+    mode_normalized = mode.lower()
+    if mode_normalized not in {"both", "invariant", "specific", "none"}:
+        raise ValueError(f"Unsupported distillation mode: {mode}")
 
-    # 1. (L_w) Labeled 弱增强 (学生) vs Labeled (教师)
-    loss_distill += distillation_loss_helper(lb_u_inv, v_inv_lb_teacher)
-    loss_distill += distillation_loss_helper(lb_u_spec, v_spec_lb_teacher)
+    device = _device(
+        lb_u_inv,
+        lb_u_spec,
+        ulb_u_inv_s,
+        ulb_u_spec_s,
+        v_inv_lb_teacher,
+        v_spec_lb_teacher,
+        v_inv_ulb_teacher_w,
+        v_spec_ulb_teacher_w,
+    )
 
-    # 2. (U_s) Unlabeled 强增强 (学生) vs Unlabeled 弱增强 (教师)
-    loss_distill += distillation_loss_helper(ulb_u_inv_s, v_inv_ulb_teacher_w)
-    loss_distill += distillation_loss_helper(ulb_u_spec_s, v_spec_ulb_teacher_w)
+    components: list[torch.Tensor] = []
 
-    return loss_distill
+    if mode_normalized in {"both", "invariant"}:
+        dist_inv_lb = _cosine_dist(lb_u_inv, v_inv_lb_teacher)
+        dist_inv_ulb = _cosine_dist(ulb_u_inv_s, v_inv_ulb_teacher_w)
+        if dist_inv_lb is not None:
+            components.append(dist_inv_lb)
+        if dist_inv_ulb is not None:
+            components.append(dist_inv_ulb)
+
+    if mode_normalized in {"both", "specific"}:
+        dist_spec_lb = _cosine_dist(lb_u_spec, v_spec_lb_teacher)
+        dist_spec_ulb = _cosine_dist(ulb_u_spec_s, v_spec_ulb_teacher_w)
+        if dist_spec_lb is not None:
+            components.append(dist_spec_lb)
+        if dist_spec_ulb is not None:
+            components.append(dist_spec_ulb)
+
+    if not components:
+        return torch.zeros((), device=device)
+
+    return sum(components)

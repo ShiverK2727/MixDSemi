@@ -9,9 +9,8 @@ import time
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
+import torch.nn.functional as F
 import torch.optim as optim
 from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
@@ -25,20 +24,30 @@ from dataloaders.dataloader import FundusSegmentation as FundusSegmentationTest
 from dataloaders.dataloader import MNMSSegmentation as MNMSSegmentationTest
 from dataloaders.dataloader import ProstateSegmentation as ProstateSegmentationTest
 from dataloaders.dataloader_dc import BUSISegmentation, FundusSegmentation, MNMSSegmentation, ProstateSegmentation
-from medpy.metric import binary
 from networks.d_unet_model import DistillationUNet
-from biomedclip_vpt import build_dual_selective_prompt_image_encoder, preprocess_tensor_images
+from biomedclip_vpt import build_dual_selective_prompt_image_encoder
 from utils.text_sampler import TextSampler
-from scipy.ndimage import zoom
 from torch.cuda.amp import GradScaler, autocast
 
-from utils import losses, metrics, ramps
-from utils.losses import compute_distillation_loss
+from utils import losses, metrics
+from utils.clip_utils import (
+    compute_clip_loss_components,
+    run_clip_teacher_step,
+    split_teacher_outputs,
+)
 from utils.conf import available_conf_strategies, compute_self_consistency
 from utils.domain_curriculum import DomainDistanceCurriculumSampler, build_distance_curriculum
+from utils.frequency import apply_midss_frequency_augmentation
 from utils.label_ops import to_2d, to_3d
-from utils.tp_ram import extract_amp_spectrum, source_to_target_freq, source_to_target_freq_midss
+from utils.losses import compute_distillation_loss
 from utils.training import Statistics, cycle, obtain_cutmix_box
+from utils.training_helpers import (
+    compute_consistency_weight,
+    compute_piecewise_threshold,
+    parse_alpha_schedule,
+    update_ema_variables,
+)
+from val import ValidationConfig, run_validation
 
 # -------------------------------------------------------------------------
 
@@ -104,10 +113,6 @@ parser.add_argument('--LB', type=float, default=0.01,
 # ==================== Semi-Supervised Learning ====================
 parser.add_argument("--ema_decay", type=float, default=0.99,
                     help="EMA decay rate for teacher model")
-parser.add_argument("--consistency", type=float, default=1.0,
-                    help="Consistency loss weight")
-parser.add_argument("--consistency_rampup", type=float, default=200.0,
-                    help="Consistency weight ramp-up period (in epochs)")
 
 # ==================== Pseudo-Label Threshold ====================
 parser.add_argument("--threshold", type=float, default=0.95,
@@ -189,8 +194,28 @@ parser.add_argument('--du_disable_style_head', action='store_true',
                     help='Disable the style head in Distillation U-Net')
 parser.add_argument('--du_disable_invariance_head', action='store_true',
                     help='Disable the invariance head in Distillation U-Net')
-parser.add_argument('--distill_weight', type=float, default=1.0,
-                    help='Weight for the distillation loss term')
+
+# ==================== Loss Configuration ====================
+loss_group = parser.add_argument_group('Loss Configuration')
+loss_group.add_argument('--consistency', type=float, default=1.0,
+                        help='Consistency loss base weight')
+loss_group.add_argument('--consistency_rampup', type=float, default=200.0,
+                        help='Sigmoid ramp-up length (in epochs) for consistency loss')
+
+clip_loss_group = parser.add_argument_group('CLIP Loss Configuration')
+clip_loss_group.add_argument('--clip_loss_mv_anchor_weight', type=float, default=1.0,
+                              help='Weight for (loss_mv + loss_anchor) term')
+clip_loss_group.add_argument('--clip_loss_ortho_weight', type=float, default=1.0,
+                              help='Weight for loss_ortho term')
+clip_loss_group.add_argument('--clip_loss_sw_reg_weight', type=float, default=1.0,
+                              help='Weight for loss_sw_reg term')
+
+distill_group = parser.add_argument_group('Distillation Configuration')
+distill_group.add_argument('--distill_weight', type=float, default=1.0,
+                            help='Weight applied to the feature distillation loss')
+distill_group.add_argument('--distill_mode', type=str, default='both',
+                            choices=['both', 'invariant', 'specific', 'none'],
+                            help='Select which feature groups participate in distillation')
 
 # ==================== BiomedCLIP with Visual Prompts ====================
 parser.add_argument('--biomedclip_path', type=str, default='/root/models/BiomedCLIP',
@@ -218,18 +243,8 @@ parser.add_argument('--text_num_subsets', type=int, default=4,
 
 args = parser.parse_args()
 
-def _parse_alpha_schedule(raw_schedule):
-    if isinstance(raw_schedule, (tuple, list)):
-        values = [float(v) for v in raw_schedule]
-    else:
-        parts = [p.strip() for p in str(raw_schedule).split(',') if p.strip()]
-        values = [float(p) for p in parts]
-    if not values:
-        raise ValueError('Alpha schedule must contain at least one float value')
-    return list(values)
-
 try:
-    args.du_alpha_schedule = _parse_alpha_schedule(args.du_alpha_schedule)
+    args.du_alpha_schedule = parse_alpha_schedule(args.du_alpha_schedule)
 except ValueError as exc:
     parser.error(f'Invalid --du_alpha_schedule: {exc}')
 
@@ -243,190 +258,14 @@ TEXT_DATASET_DEFAULTS = {
     'MNMS': 'MNMS',
     'BUSI': 'BUSI',
 }
-
-
-def get_current_consistency_weight(epoch):
-    # Consistency ramp-up from https://arxiv.org/abs/1610.02242
-    return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
-
-def get_piecewise_threshold(current_stage, num_stages, tau_min, tau_max):
-    """
-    Calculate piecewise threshold based on curriculum stage.
-    
-    Args:
-        current_stage: Current curriculum stage (0-indexed)
-        num_stages: Total number of curriculum stages
-        tau_min: Minimum threshold at stage 0
-        tau_max: Maximum threshold at final stage
-    
-    Returns:
-        threshold: Linearly interpolated threshold for current stage
-    
-    Formula: tau_k = tau_min + (k / (N-1)) * (tau_max - tau_min)
-    """
-    if num_stages <= 1:
-        return tau_max  # Single stage: use max threshold
-    
-    # Clamp stage to valid range
-    stage = max(0, min(current_stage, num_stages - 1))
-    
-    # Linear interpolation
-    threshold = tau_min + (stage / (num_stages - 1)) * (tau_max - tau_min)
-    
-    return threshold
-
-def update_ema_variables(model, ema_model, alpha, global_step):
-    # teacher network: ema_model
-    # student network: model
-    # Use the true average until the exponential average is more correct
-    alpha = min(1 - 1 / (global_step + 1), alpha)
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-        ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
-
-@torch.no_grad()
-def test(args, model, test_dataloader, iteration, writer):
-    """
-    Test function for model evaluation.
-    
-    Args:
-        iteration: Current training iteration (not epoch, since training is iteration-based)
-    
-    Note: This is NOT binary classification for all datasets:
-        - fundus: 2 foreground classes (cup, disc) + background = 3 classes
-        - MNMS: 3 foreground classes (lv, myo, rv) + background = 4 classes  
-        - prostate/BUSI: 1 foreground class + background = 2 classes (truly binary)
-    """
-    model.eval()
-    val_dice = [0.0] * n_part
-    val_dc, val_jc, val_hd, val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
-    domain_num = len(test_dataloader)
-    print(f"Starting evaluation over {domain_num} domains...")
-    for i in range(domain_num):
-        cur_dataloader = test_dataloader[i]
-        domain_val_dice = [0.0] * n_part
-        domain_val_dc, domain_val_jc, domain_val_hd, domain_val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
-        domain_code = i+1
-        for batch_num,sample in enumerate(cur_dataloader):
-            # print(f"  Evaluating domain {domain_code}, batch {batch_num+1}/{len(cur_dataloader)}")
-            # print(f"    Sample dc code: {sample['dc'][0].item()}")
-            assert(domain_code == sample['dc'][0].item())
-            mask = sample['label']
-            if args.dataset == 'fundus':
-                lb_mask = (mask<=128) * 2
-                lb_mask[mask==0] = 1
-                mask = lb_mask
-            elif args.dataset == 'prostate':
-                mask = mask.eq(0).long()
-            elif args.dataset == 'MNMS':
-                mask = mask.long()
-            elif args.dataset == 'BUSI':
-                mask = mask.eq(255).long()
-            data = sample['unet_size_img'].cuda()
-            output = model(data)
-            pred_label = torch.max(torch.softmax(output,dim=1), dim=1)[1]
-            pred_label = torch.from_numpy(zoom(pred_label.cpu(), (1, patch_size / data.shape[-2], patch_size / data.shape[-1]), order=0))
-            
-            if args.dataset == 'fundus':
-                pred_label = to_2d(pred_label)
-                mask = to_2d(mask)
-                pred_onehot = pred_label.clone()
-                mask_onehot = mask.clone()
-            elif args.dataset == 'prostate' or args.dataset == 'BUSI':
-                pred_onehot = pred_label.clone().unsqueeze(1)
-                mask_onehot = mask.clone().unsqueeze(1)
-            elif args.dataset == 'MNMS':
-                pred_onehot = to_3d(pred_label)
-                mask_onehot = to_3d(mask)
-            dice = dice_calcu[args.dataset](np.asarray(pred_label.cpu()),mask.cpu())
-            
-            dc, jc, hd, asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
-            for j in range(len(data)):
-                for i, p in enumerate(part):
-                    dc[i] += binary.dc(np.asarray(pred_onehot[j,i], dtype=bool),
-                                            np.asarray(mask_onehot[j,i], dtype=bool))
-                    jc[i] += binary.jc(np.asarray(pred_onehot[j,i], dtype=bool),
-                                            np.asarray(mask_onehot[j,i], dtype=bool))
-                    if pred_onehot[j,i].float().sum() < 1e-4:
-                        hd[i] += 100
-                        asd[i] += 100
-                    else:
-                        hd[i] += binary.hd95(np.asarray(pred_onehot[j,i], dtype=bool),
-                                            np.asarray(mask_onehot[j,i], dtype=bool))
-                        asd[i] += binary.asd(np.asarray(pred_onehot[j,i], dtype=bool),
-                                            np.asarray(mask_onehot[j,i], dtype=bool))
-            for i, p in enumerate(part):
-                dc[i] /= len(data)
-                jc[i] /= len(data)
-                hd[i] /= len(data)
-                asd[i] /= len(data)
-            for i in range(len(domain_val_dice)):
-                domain_val_dice[i] += dice[i]
-                domain_val_dc[i] += dc[i]
-                domain_val_jc[i] += jc[i]
-                domain_val_hd[i] += hd[i]
-                domain_val_asd[i] += asd[i]
-        
-        for i in range(len(domain_val_dice)):
-            domain_val_dice[i] /= len(cur_dataloader)
-            val_dice[i] += domain_val_dice[i]
-            domain_val_dc[i] /= len(cur_dataloader)
-            val_dc[i] += domain_val_dc[i]
-            domain_val_jc[i] /= len(cur_dataloader)
-            val_jc[i] += domain_val_jc[i]
-            domain_val_hd[i] /= len(cur_dataloader)
-            val_hd[i] += domain_val_hd[i]
-            domain_val_asd[i] /= len(cur_dataloader)
-            val_asd[i] += domain_val_asd[i]
-        for n, p in enumerate(part):
-            writer.add_scalar('unet_val/domain{}/val_{}_dice'.format(domain_code, p), domain_val_dice[n], iteration)
-        text = 'domain%d iter %d :' % (domain_code, iteration)
-        text += '\n\t'
-        for n, p in enumerate(part):
-            text += 'val_%s_dice: %f, ' % (p, domain_val_dice[n])
-        text += '\n\t'
-        for n, p in enumerate(part):
-            text += 'val_%s_dc: %f, ' % (p, domain_val_dc[n])
-        text += '\t'
-        for n, p in enumerate(part):
-            text += 'val_%s_jc: %f, ' % (p, domain_val_jc[n])
-        text += '\n\t'
-        for n, p in enumerate(part):
-            text += 'val_%s_hd: %f, ' % (p, domain_val_hd[n])
-        text += '\t'
-        for n, p in enumerate(part):
-            text += 'val_%s_asd: %f, ' % (p, domain_val_asd[n])
-        logging.info(text)
-        
-    model.train()
-    for i in range(len(val_dice)):
-        val_dice[i] /= domain_num
-        val_dc[i] /= domain_num
-        val_jc[i] /= domain_num
-        val_hd[i] /= domain_num
-        val_asd[i] /= domain_num
-    for n, p in enumerate(part):
-        writer.add_scalar('unet_val/val_{}_dice'.format(p), val_dice[n], iteration)
-    text = 'iteration %d :' % (iteration)
-    text += '\n\t'
-    for n, p in enumerate(part):
-        text += 'val_%s_dice: %f, ' % (p, val_dice[n])
-    text += '\n\t'
-    for n, p in enumerate(part):
-        text += 'val_%s_dc: %f, ' % (p, val_dc[n])
-    text += '\t'
-    for n, p in enumerate(part):
-        text += 'val_%s_jc: %f, ' % (p, val_jc[n])
-    text += '\n\t'
-    for n, p in enumerate(part):
-        text += 'val_%s_hd: %f, ' % (p, val_hd[n])
-    text += '\t'
-    for n, p in enumerate(part):
-        text += 'val_%s_asd: %f, ' % (p, val_asd[n])
-    logging.info(text)
-    return val_dice
-    
 def train(args, snapshot_path):
     writer = SummaryWriter(snapshot_path + '/log')
+    validation_config = ValidationConfig(
+        dataset=args.dataset,
+        parts=part,
+        patch_size=patch_size,
+        dice_fn=dice_calcu[args.dataset],
+    )
     
     # Learning rate configuration
     # Modified to match MiDSS: use 0.03 with polynomial decay (no warmup by default)
@@ -639,11 +478,11 @@ def train(args, snapshot_path):
 
     # Initialize threshold based on piecewise strategy
     if args.enable_piecewise_tau:
-        threshold = get_piecewise_threshold(
+        threshold = compute_piecewise_threshold(
             current_stage=curriculum_sampler.stage,
             num_stages=args.dc_parts,
             tau_min=args.tau_min,
-            tau_max=args.tau_max
+            tau_max=args.tau_max,
         )
         logging.info(
             "Piecewise threshold ENABLED: initial stage=%d, threshold=%.4f (tau_min=%.2f, tau_max=%.2f)",
@@ -688,6 +527,17 @@ def train(args, snapshot_path):
         "Confidence strategy: %s (teacher temp=%.2f)",
         args.conf_strategy,
         args.conf_teacher_temp,
+    )
+    logging.info(
+        "Distillation mode: %s (weight=%.3f)",
+        args.distill_mode,
+        args.distill_weight,
+    )
+    logging.info(
+        "CLIP loss weights: mv_anchor=%.3f, ortho=%.3f, sw_reg=%.3f",
+        args.clip_loss_mv_anchor_weight,
+        args.clip_loss_ortho_weight,
+        args.clip_loss_sw_reg_weight,
     )
 
     # Calculate number of evaluation cycles
@@ -804,89 +654,52 @@ def train(args, snapshot_path):
 
             # ========== 1. CLIP 侧 (VPT 教师) 训练 ==========
 
-            # 1.1 准备 CLIP 输入数据
-            # L_w 和 U_w 用于计算 L_mv, L_anchor, L_perp, 和蒸馏信号
             weak_images = torch.cat([lb_unet_size_x_w, ulb_unet_size_x_w], dim=0)
-            # U_s 仅用于计算 L_sw_reg
             strong_images_ulb = ulb_unet_size_x_s
-            # 1.2 CLIP 教师前向传播
-            # 使用 forward_dual_from_tensor 高效获取 L_w + U_w 的 v_inv 和 v_spec
-            dual_outputs_w = biomedclip_model.forward_dual_from_tensor(
-                images=weak_images, 
-                preprocess=biomedclip_preprocess
-            )
-            v_inv_w = dual_outputs_w["invariant"]["image_features"]   # [B_lb + B_ulb, D]
-            v_spec_w = dual_outputs_w["specific"]["image_features"]  # [B_lb + B_ulb, D]
-            # 使用 encode_image_from_tensor 获取 U_s 的 v_inv
-            outputs_s = biomedclip_model.encode_image_from_tensor(
-                images=strong_images_ulb,
-                preprocess=biomedclip_preprocess, 
-                prompt_group="invariant"
-            )
-            v_inv_s = outputs_s["image_features"] # [B_ulb, D]
 
-            # 1.3 构建 CLIP 教师损失 (L_CLIP)
-            # L_mv (跨组方差损失): L_w + U_w 均需对齐 K 个语义原型
-            sim_matrix = torch.matmul(v_inv_w, p_k_anchors.T) 
-            loss_mv = torch.var(sim_matrix, dim=1).mean()
-            # L_anchor (锚点对齐损失): L_w + U_w 均需对齐全局语义锚点
-            sim_global = torch.matmul(v_inv_w, a_global_anchor.T).squeeze(-1) 
-            loss_anchor = (1 - sim_global).mean()
-            # L_perp (正交解耦损失): L_w + U_w 的 v_inv 和 v_spec 均需解耦
-            loss_ortho = torch.sum(v_inv_w * v_spec_w, dim=1).pow(2).mean()
-            # L_sw_reg (强弱语义正则化): 仅 U_s 的 v_inv 对齐 U_w 的 v_inv
-            v_inv_ulb_w = v_inv_w[args.label_bs:] # 提取 U_w 的不变特征
-            loss_sw_reg = (1 - torch.sum(v_inv_s * v_inv_ulb_w.detach(), dim=1)).mean()
-            # 总 CLIP 损失
-            loss_clip_total = loss_mv + loss_anchor + loss_ortho + loss_sw_reg
+            clip_outputs = run_clip_teacher_step(
+                biomedclip_model=biomedclip_model,
+                preprocess=biomedclip_preprocess,
+                weak_images=weak_images,
+                strong_images_ulb=strong_images_ulb,
+            )
 
-            # 1.5 CLIP 优化器步骤 (只更新 VPTs)
+            clip_loss_components = compute_clip_loss_components(
+                outputs=clip_outputs,
+                anchors=p_k_anchors,
+                global_anchor=a_global_anchor,
+                label_batch_size=args.label_bs,
+            )
+            loss_clip_total = (
+                args.clip_loss_mv_anchor_weight * clip_loss_components.mv_anchor
+                + args.clip_loss_ortho_weight * clip_loss_components.ortho
+                + args.clip_loss_sw_reg_weight * clip_loss_components.sw_reg
+            )
+
             biomedclip_optimizer.zero_grad()
             if args.amp:
                 scaler.scale(loss_clip_total).backward()
                 scaler.step(biomedclip_optimizer)
-                # 注意：scaler.update() 必须在 UNet 优化步骤之后统一调用
             else:
                 loss_clip_total.backward()
                 biomedclip_optimizer.step()
 
-            # 1.6 准备蒸馏信号 (教师信号) - (此部分逻辑不变)
-            v_inv_w_detached = v_inv_w.detach()
-            v_spec_w_detached = v_spec_w.detach()
-            v_inv_lb_teacher = v_inv_w_detached[:args.label_bs]; v_spec_lb_teacher = v_spec_w_detached[:args.label_bs]
-            v_inv_ulb_teacher_w = v_inv_w_detached[args.label_bs:]; v_spec_ulb_teacher_w = v_spec_w_detached[args.label_bs:]
+            teacher_targets = split_teacher_outputs(clip_outputs, args.label_bs)
+            v_inv_lb_teacher = teacher_targets.v_inv_lb
+            v_spec_lb_teacher = teacher_targets.v_spec_lb
+            v_inv_ulb_teacher_w = teacher_targets.v_inv_ulb
+            v_spec_ulb_teacher_w = teacher_targets.v_spec_ulb
 
             # ========== Frequency-domain augmentation (MiDSS style) ==========
             if args.use_freq_aug:
-                # Apply frequency augmentation to labeled images using unlabeled amplitude
-                # Move tensors to CPU, convert to numpy, apply freq aug, convert back
-                move_transx_list = []
-                lb_x_w_cpu = lb_unet_size_x_w.cpu()
-                ulb_x_w_cpu = ulb_unet_size_x_w.cpu()
-                
-                for i in range(len(lb_x_w_cpu)):
-                    # Convert from tensor range [-1, 1] to [0, 255] for frequency processing
-                    # Assuming input is normalized to [-1, 1] (from dataloader)
-                    lb_img_255 = ((lb_x_w_cpu[i] + 1) * 127.5).numpy()  # (C, H, W) in [0, 255]
-                    ulb_img_255 = ((ulb_x_w_cpu[i] + 1) * 127.5).numpy()  # (C, H, W) in [0, 255]
-                    
-                    # Extract amplitude spectrum from unlabeled image
-                    amp_trg = extract_amp_spectrum(ulb_img_255)
-                    
-                    # Apply frequency augmentation with progressive degree
-                    degree = iter_num / max_iterations
-                    img_freq = source_to_target_freq_midss(lb_img_255, amp_trg, L=args.LB, degree=degree)
-                    
-                    # Clip to valid range and convert back to tensor range [-1, 1]
-                    img_freq = np.clip(img_freq, 0, 255).astype(np.float32)
-                    move_transx_list.append(img_freq)
-                
-                # Stack and convert back to tensor
-                move_transx = torch.tensor(np.array(move_transx_list), dtype=torch.float32)
-                move_transx = move_transx / 127.5 - 1  # Convert back to [-1, 1]
-                move_transx = move_transx.cuda()
+                degree = iter_num / max_iterations
+                move_transx = apply_midss_frequency_augmentation(
+                    labeled_images=lb_unet_size_x_w,
+                    unlabeled_images=ulb_unet_size_x_w,
+                    degree=degree,
+                    low_band=args.LB,
+                )
             else:
-                # If frequency augmentation is disabled, use original labeled images
                 move_transx = lb_unet_size_x_w
 
             with amp_cm():
@@ -1050,7 +863,8 @@ def train(args, snapshot_path):
                 v_inv_lb_teacher=v_inv_lb_teacher,     # L_w (教师) 不变特征
                 v_spec_lb_teacher=v_spec_lb_teacher,   # L_w (教师) 特定特征
                 v_inv_ulb_teacher_w=v_inv_ulb_teacher_w, # U_w (教师) 不变特征
-                v_spec_ulb_teacher_w=v_spec_ulb_teacher_w  # U_w (教师) 特定特征
+                v_spec_ulb_teacher_w=v_spec_ulb_teacher_w,  # U_w (教师) 特定特征
+                mode=args.distill_mode,
                 )
                 loss_distill = args.distill_weight * loss_distill
 
@@ -1069,8 +883,15 @@ def train(args, snapshot_path):
                 unet_sup_loss = ce_loss(unet_logits_lb_x_w, lb_unet_size_mask).mean() + \
                             dice_loss(unet_logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
                 
-                consistency_weight = get_current_consistency_weight(
-                    iter_num // (max_iterations/args.consistency_rampup))
+                if args.consistency_rampup > 0:
+                    rampup_progress = iter_num / max(1.0, max_iterations / args.consistency_rampup)
+                else:
+                    rampup_progress = 0.0
+                consistency_weight = compute_consistency_weight(
+                    epoch=rampup_progress,
+                    base_weight=args.consistency,
+                    rampup_length=args.consistency_rampup,
+                )
 
                 # UL unsupervised loss
                 unet_unsup_loss_ul = (ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * 
@@ -1256,11 +1077,11 @@ def train(args, snapshot_path):
                     # Update threshold if piecewise strategy is enabled
                     if args.enable_piecewise_tau:
                         old_threshold = threshold
-                        threshold = get_piecewise_threshold(
+                        threshold = compute_piecewise_threshold(
                             current_stage=curriculum_sampler.stage,
                             num_stages=args.dc_parts,
                             tau_min=args.tau_min,
-                            tau_max=args.tau_max
+                            tau_max=args.tau_max,
                         )
                         logging.info(
                             "→ Curriculum stage advanced: %d→%d (iter %d), threshold: %.4f→%.4f",
@@ -1311,6 +1132,10 @@ def train(args, snapshot_path):
             writer.add_scalar('train/mask_lu', mask_lu.mean(), iter_num)
             writer.add_scalar('train/mask_w', mask_w.mean(), iter_num)
             writer.add_scalar('train/ensemble_ratio', ensemble.mean(), iter_num)
+            writer.add_scalar('train/clip_loss_total', loss_clip_total.item(), iter_num)
+            writer.add_scalar('train/clip_loss_mv_anchor', clip_loss_components.mv_anchor.item(), iter_num)
+            writer.add_scalar('train/clip_loss_ortho', clip_loss_components.ortho.item(), iter_num)
+            writer.add_scalar('train/clip_loss_sw_reg', clip_loss_components.sw_reg.item(), iter_num)
             writer.add_scalar('train/loss', loss.item(), iter_num)
             writer.add_scalar('train/unet_sup_loss', unet_sup_loss.item(), iter_num)
             writer.add_scalar('train/unet_unsup_loss_ul', unet_unsup_loss_ul.item(), iter_num)
@@ -1319,6 +1144,7 @@ def train(args, snapshot_path):
             writer.add_scalar('train/ul_weight_term', ul_term.item(), iter_num)
             writer.add_scalar('train/lu_weight_term', lu_term.item(), iter_num)
             writer.add_scalar('train/cons_weight_term', cons_term.item(), iter_num)
+            writer.add_scalar('train/loss_distill', loss_distill.item(), iter_num)
             writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
             writer.add_scalar('train/learning_rate', unet_optimizer.param_groups[0]['lr'], iter_num)
             writer.add_scalar('train/threshold', threshold, iter_num)
@@ -1371,7 +1197,13 @@ def train(args, snapshot_path):
         logging.info('test unet model')
         text = ''
         current_iter = (eval_cycle + 1) * args.num_eval_iter
-        val_dice = test(args, unet_model, test_dataloader, current_iter, writer)
+        val_dice = run_validation(
+            model=unet_model,
+            dataloaders=test_dataloader,
+            iteration=current_iter,
+            writer=writer,
+            config=validation_config,
+        )
         
         for n, p in enumerate(part):
             if val_dice[n] > best_dice[n]:
