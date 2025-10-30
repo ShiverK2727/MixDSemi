@@ -296,135 +296,11 @@ class DistillationUNet(nn.Module):
         else:
             return logits
 
-
-class DistillationUNetV2(nn.Module):
-    def __init__(self, n_channels, n_classes, bilinear=False, 
-                 style_dim=512, 
-                 modulation_type='conditional', # 'none', 'film', 'conditional', 'cbn'
-                 # conditional/cbn 模式的 AffineGen 超參數
-                 use_low_rank: bool = True, 
-                 r_rank=8,
-                 alpha_schedule=(0.05, 0.08, 0.12, 0.16),
-                 # 控制頭
-                 use_invariance_head=True, 
-                 use_style_head=True, 
-                 ):
-        super(DistillationUNetV2, self).__init__()
-        
-        # --- 參數設定 ---
-        self.n_channels = n_channels
-        self.n_classes = n_classes
-        self.bilinear = bilinear
-        self.style_dim = style_dim if use_style_head else 0
-        self.modulation_type = modulation_type if use_style_head else 'none'
-        self.use_invariance_head = use_invariance_head
-        self.use_style_head = use_style_head
-
-        # --- 構建編碼器 ---
-        self.inc = DoubleConv(n_channels, 64)
-        
-        # 根據 modulation_type 選擇 Down 模塊
-        if self.modulation_type == 'film':
-            DownBlock = lambda in_c, out_c, *args: FiLMDown(in_c, out_c, style_dim=style_dim)
-        
-        elif self.modulation_type in ['conditional', 'cbn']:
-            alphas = list(alpha_schedule); assert len(alphas) == 4
-            gen_factory = lambda idx, C: (
-                AffineGen(style_dim, C, use_low_rank, r_rank, alphas[idx], output_delta=True),
-                AffineGen(style_dim, C, use_low_rank, r_rank, alphas[idx], output_delta=True)
-            )
-            if self.modulation_type == 'conditional':
-                DownBlock = lambda in_c, out_c, idx: ConditionalAffineDown(in_c, out_c, gen_pair_factory=lambda C: gen_factory(idx, C))
-            else: # 'cbn'
-                DownBlock = lambda in_c, out_c, idx: CBNDown(in_c, out_c, gen_pair_factory=lambda C: gen_factory(idx, C))
-        
-        else: # 'none'
-            DownBlock = lambda in_c, out_c, *args: Down(in_c, out_c)
-            
-        factor = 2 if bilinear else 1
-        
-        # ==================== 修改點 1 ====================
-        # 將調制應用於 down1, down2, down3
-        self.down1 = DownBlock(64, 128, 0)           # <-- (修改) 使用 alphas[0] 調製
-        self.down2 = DownBlock(128, 256, 1)          # <-- (修改) 使用 alphas[1] 調製
-        self.down3 = DownBlock(256, 512, 2)          # <-- (修改) 使用 alphas[2] 調製
-        self.down4 = Down(512, 1024 // factor)       # <-- (修改) 恢復為標準 Down，不調製
-        # ================================================
-
-        # --- 知識蒸餾頭 ---
-        self.style_head = None
-        if self.use_style_head:
-            self.style_head = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1), nn.Flatten(),
-                # ==================== 修改點 2 ====================
-                # inc 的輸出 (x1) 是 64 通道，而不是 128
-                nn.Linear(64, style_dim), nn.ReLU(inplace=True), 
-                # ================================================
-                nn.Linear(style_dim, style_dim)
-            )
-
-        self.invariance_head = None
-        clip_inv_dim = style_dim 
-        if self.use_invariance_head:
-            self.invariance_head = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1), nn.Flatten(),
-                nn.Linear(1024 // factor, clip_inv_dim), nn.ReLU(inplace=True),
-                nn.Linear(clip_inv_dim, clip_inv_dim)
-            )
-
-        # --- 解碼器 --- (保持不變)
-        self.up1 = Up(1024, 512 // factor, bilinear)
-        self.up2 = Up(512, 256 // factor, bilinear)
-        self.up3 = Up(256, 128 // factor, bilinear)
-        self.up4 = Up(128, 64, bilinear)
-        self.outc = OutConv(64, n_classes)
-
-    def forward(self, x, training=False):
-        # --- 提取用於風格頭的淺層特徵 ---
-        x1 = self.inc(x)
-        
-        # ==================== 修改點 3 ====================
-        # --- 從 x1 (inc的輸出) 生成 u_spec (如果啟用) ---
-        u_spec = None
-        if self.use_style_head and self.style_head is not None:
-            u_spec = self.style_head(x1) # <-- (修改) 從 x1 生成
-            u_spec = F.normalize(u_spec, dim=1)
-        
-        # --- 運行編碼器 ---
-        if self.modulation_type != 'none':
-            x2 = self.down1(x1, u_spec) # <-- (修改) 調製 down1
-            x3 = self.down2(x2, u_spec) # <-- (修改) 調製 down2
-            x4 = self.down3(x3, u_spec) # <-- (修改) 調製 down3
-            x5 = self.down4(x4)         # <-- (修改) 不調製 down4
-        else:
-            x2 = self.down1(x1) # 此时 self.down1 是原始 Down
-            x3 = self.down2(x2)
-            x4 = self.down3(x3)
-            x5 = self.down4(x4)
-        # ================================================
-
-        # --- 生成 u_inv (如果啟用) ---
-        u_inv = None
-        if self.use_invariance_head and self.invariance_head is not None:
-            u_inv = self.invariance_head(x5)
-            u_inv = F.normalize(u_inv, dim=1)
-
-        # --- 解碼器 ---
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
-        logits = self.outc(x)
-
-        if training:
-            return logits, u_inv, u_spec
-        else:
-            return logits
 # --- 範例用法 ---
 if __name__ == '__main__':
     
     print("--- 測試 Conditional Affine (Low Rank) ---")
-    model_cond_lr = DistillationUNetV2(
+    model_cond_lr = DistillationUNet(
         n_channels=3, n_classes=1, style_dim=512, 
         modulation_type='conditional', use_low_rank=True, r_rank=8, 
         use_invariance_head=True, use_style_head=True
@@ -434,7 +310,7 @@ if __name__ == '__main__':
     print(f"Logits: {out_lr.shape}, u_inv: {inv_lr.shape}, u_spec: {spec_lr.shape}")
     
     print("\n--- 測試 Conditional Affine (Direct Map) ---")
-    model_cond_direct = DistillationUNetV2(
+    model_cond_direct = DistillationUNet(
         n_channels=3, n_classes=1, style_dim=512, 
         modulation_type='conditional', use_low_rank=False, # <-- 設為 False
         use_invariance_head=True, use_style_head=True
@@ -443,7 +319,7 @@ if __name__ == '__main__':
     print(f"Logits: {out_direct.shape}, u_inv: {inv_direct.shape}, u_spec: {spec_direct.shape}")
 
     print("\n--- 測試 FiLM ---")
-    model_film = DistillationUNetV2(
+    model_film = DistillationUNet(
         n_channels=3, n_classes=1, style_dim=512, 
         modulation_type='film', 
         use_invariance_head=True, use_style_head=True
@@ -452,7 +328,7 @@ if __name__ == '__main__':
     print(f"Logits: {out_film.shape}, u_inv: {inv_film.shape}, u_spec: {spec_film.shape}")
 
     print("\n--- 測試 CBN (Low Rank) ---")
-    model_cbn_lr = DistillationUNetV2(
+    model_cbn_lr = DistillationUNet(
         n_channels=3, n_classes=1, style_dim=512, 
         modulation_type='cbn', use_low_rank=True, r_rank=8, 
         use_invariance_head=True, use_style_head=True
@@ -461,7 +337,7 @@ if __name__ == '__main__':
     print(f"Logits: {out_cbn_lr.shape}, u_inv: {inv_cbn_lr.shape}, u_spec: {spec_cbn_lr.shape}")
 
     print("\n--- 測試原始 U-Net ---")
-    model_orig = DistillationUNetV2(
+    model_orig = DistillationUNet(
         n_channels=3, n_classes=1, 
         modulation_type='none', 
         use_invariance_head=False, use_style_head=False

@@ -1,7 +1,7 @@
 import logging
 import math
 import time
-from typing import Iterator, List, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch.utils.data import Sampler
@@ -112,6 +112,8 @@ class DomainDistanceCurriculumSampler(Sampler[int]):
         initial_stage: int = 1,
         seed: int = 42,
         shuffle: bool = True,
+        score_lookup: Optional[Union[Sequence[torch.Tensor], Dict[int, torch.Tensor]]] = None,
+        stratified_batch_size: Optional[int] = None,
     ) -> None:
         if not partitions:
             raise ValueError("partitions must not be empty")
@@ -123,6 +125,8 @@ class DomainDistanceCurriculumSampler(Sampler[int]):
         self._epoch = 0
         self.stage = 0
         self._active_indices: List[int] = []
+        self._score_lookup = self._normalize_scores(score_lookup)
+        self.stratified_batch_size = int(stratified_batch_size) if stratified_batch_size and stratified_batch_size > 0 else 0
         self.set_stage(initial_stage)
 
     def set_epoch(self, epoch: int) -> None:
@@ -163,17 +167,111 @@ class DomainDistanceCurriculumSampler(Sampler[int]):
     def __iter__(self) -> Iterator[int]:
         if not self._active_indices:
             return iter([])
+        generator = None
         if self.shuffle:
             generator = torch.Generator()
-            # Use seed + epoch for reproducible, epoch-varying permutations.
             generator.manual_seed(self.seed + int(getattr(self, '_epoch', 0)))
-            order = torch.randperm(len(self._active_indices), generator=generator)
-            shuffled = [self._active_indices[i] for i in order]
-            return iter(shuffled)
-        return iter(self._active_indices)
+
+        if self.stratified_batch_size > 1 and self._score_lookup is not None:
+            ordered = self._build_stratified_order(self._active_indices, generator)
+        elif self.shuffle:
+            ordered = self._permute_indices(self._active_indices, generator)
+        else:
+            ordered = list(self._active_indices)
+        return iter(ordered)
 
     def __len__(self) -> int:
         return len(self._active_indices)
+
+    # ------------------------------------------------------------------
+    def _normalize_scores(
+        self,
+        score_lookup: Optional[Union[Sequence[torch.Tensor], Dict[int, torch.Tensor]]],
+    ) -> Optional[Union[List[Optional[float]], Dict[int, Optional[float]]]]:
+        if score_lookup is None:
+            return None
+        if isinstance(score_lookup, dict):
+            normalized: Dict[int, Optional[float]] = {}
+            for key, value in score_lookup.items():
+                normalized[key] = self._score_to_scalar(value)
+            return normalized
+        normalized_list: List[Optional[float]] = []
+        for value in score_lookup:
+            normalized_list.append(self._score_to_scalar(value))
+        return normalized_list
+
+    @staticmethod
+    def _score_to_scalar(score: Optional[Union[torch.Tensor, Sequence[float], float]]) -> Optional[float]:
+        if score is None:
+            return None
+        try:
+            tensor = torch.as_tensor(score, dtype=torch.float32)
+        except Exception:
+            return None
+        if tensor.numel() == 0:
+            return None
+        return float(tensor.float().mean().item())
+
+    def _get_score_value(self, index: int) -> Optional[float]:
+        if self._score_lookup is None:
+            return None
+        if isinstance(self._score_lookup, dict):
+            return self._score_lookup.get(index)
+        if 0 <= index < len(self._score_lookup):
+            return self._score_lookup[index]
+        return None
+
+    def _permute_indices(self, indices: Sequence[int], generator: Optional[torch.Generator]) -> List[int]:
+        if generator is None or len(indices) <= 1:
+            return list(indices)
+        order = torch.randperm(len(indices), generator=generator).tolist()
+        return [indices[i] for i in order]
+
+    def _build_stratified_order(self, indices: Sequence[int], generator: Optional[torch.Generator]) -> List[int]:
+        if not indices:
+            return []
+
+        scored: List[tuple[int, float]] = []
+        missing: List[int] = []
+        for idx in indices:
+            value = self._get_score_value(idx)
+            if value is None:
+                missing.append(idx)
+            else:
+                scored.append((idx, value))
+
+        if not scored:
+            # fallback to random order if scores unavailable
+            return self._permute_indices(indices, generator)
+
+        scored.sort(key=lambda x: x[1])
+        num_bins = min(self.stratified_batch_size, len(scored))
+        if num_bins <= 1:
+            ordered = [idx for idx, _ in scored]
+        else:
+            bins: List[List[int]] = [[] for _ in range(num_bins)]
+            total = len(scored)
+            for rank, (idx, _) in enumerate(scored):
+                bin_id = min(num_bins - 1, int(rank * num_bins / total))
+                bins[bin_id].append(idx)
+
+            if generator is not None:
+                for i in range(num_bins):
+                    if len(bins[i]) > 1:
+                        bins[i] = self._permute_indices(bins[i], generator)
+
+            max_bin_len = max(len(bin_list) for bin_list in bins)
+            ordered = []
+            for offset in range(max_bin_len):
+                for bin_id in range(num_bins):
+                    bin_list = bins[bin_id]
+                    if offset < len(bin_list):
+                        ordered.append(bin_list[offset])
+
+        if missing:
+            tail = self._permute_indices(missing, generator) if generator is not None else missing
+            ordered.extend(tail)
+        return ordered
     
 
 

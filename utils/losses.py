@@ -3,6 +3,7 @@ from torch.nn import functional as F
 import numpy as np
 import torch.nn as nn
 from torch.autograd import Variable
+from typing import NamedTuple, Optional
 
 
 def dice_loss(score, target):
@@ -299,7 +300,13 @@ def compute_kl_loss(p, q):
 # L_dist (蒸馏损失)
 # (应放在 utils/losses.py 或
 #  train_unet_MiDSS_DC_v2_dunet.py 的 L50 附近)
-def compute_distillation_loss(
+class DistillationComponents(NamedTuple):
+    total: torch.Tensor
+    invariant: Optional[torch.Tensor]
+    specific: Optional[torch.Tensor]
+
+
+def compute_distillation_components(
     lb_u_inv: torch.Tensor,
     lb_u_spec: torch.Tensor,
     ulb_u_inv_s: torch.Tensor,
@@ -309,8 +316,8 @@ def compute_distillation_loss(
     v_inv_ulb_teacher_w: torch.Tensor,
     v_spec_ulb_teacher_w: torch.Tensor,
     mode: str = "both",
-) -> torch.Tensor:
-    """Cosine-based distillation loss with configurable feature groups."""
+) -> DistillationComponents:
+    """Return distillation loss split into invariant/specific components."""
 
     def _device(*tensors: torch.Tensor) -> torch.device:
         for tensor in tensors:
@@ -341,24 +348,60 @@ def compute_distillation_loss(
     )
 
     components: list[torch.Tensor] = []
+    invariant_components: list[torch.Tensor] = []
+    specific_components: list[torch.Tensor] = []
 
     if mode_normalized in {"both", "invariant"}:
         dist_inv_lb = _cosine_dist(lb_u_inv, v_inv_lb_teacher)
         dist_inv_ulb = _cosine_dist(ulb_u_inv_s, v_inv_ulb_teacher_w)
         if dist_inv_lb is not None:
             components.append(dist_inv_lb)
+            invariant_components.append(dist_inv_lb)
         if dist_inv_ulb is not None:
             components.append(dist_inv_ulb)
+            invariant_components.append(dist_inv_ulb)
 
     if mode_normalized in {"both", "specific"}:
         dist_spec_lb = _cosine_dist(lb_u_spec, v_spec_lb_teacher)
         dist_spec_ulb = _cosine_dist(ulb_u_spec_s, v_spec_ulb_teacher_w)
         if dist_spec_lb is not None:
             components.append(dist_spec_lb)
+            specific_components.append(dist_spec_lb)
         if dist_spec_ulb is not None:
             components.append(dist_spec_ulb)
+            specific_components.append(dist_spec_ulb)
 
     if not components:
-        return torch.zeros((), device=device)
+        zero = torch.zeros((), device=device)
+        return DistillationComponents(total=zero, invariant=None, specific=None)
 
-    return sum(components)
+    total = sum(components)
+    inv = sum(invariant_components) if invariant_components else None
+    spec = sum(specific_components) if specific_components else None
+    return DistillationComponents(total=total, invariant=inv, specific=spec)
+
+
+def compute_distillation_loss(
+    lb_u_inv: torch.Tensor,
+    lb_u_spec: torch.Tensor,
+    ulb_u_inv_s: torch.Tensor,
+    ulb_u_spec_s: torch.Tensor,
+    v_inv_lb_teacher: torch.Tensor,
+    v_spec_lb_teacher: torch.Tensor,
+    v_inv_ulb_teacher_w: torch.Tensor,
+    v_spec_ulb_teacher_w: torch.Tensor,
+    mode: str = "both",
+) -> torch.Tensor:
+    """Cosine-based distillation loss with configurable feature groups."""
+
+    return compute_distillation_components(
+        lb_u_inv=lb_u_inv,
+        lb_u_spec=lb_u_spec,
+        ulb_u_inv_s=ulb_u_inv_s,
+        ulb_u_spec_s=ulb_u_spec_s,
+        v_inv_lb_teacher=v_inv_lb_teacher,
+        v_spec_lb_teacher=v_spec_lb_teacher,
+        v_inv_ulb_teacher_w=v_inv_ulb_teacher_w,
+        v_spec_ulb_teacher_w=v_spec_ulb_teacher_w,
+        mode=mode,
+    ).total

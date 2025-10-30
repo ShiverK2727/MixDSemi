@@ -24,7 +24,7 @@ from dataloaders.dataloader import FundusSegmentation as FundusSegmentationTest
 from dataloaders.dataloader import MNMSSegmentation as MNMSSegmentationTest
 from dataloaders.dataloader import ProstateSegmentation as ProstateSegmentationTest
 from dataloaders.dataloader_dc import BUSISegmentation, FundusSegmentation, MNMSSegmentation, ProstateSegmentation
-from networks.d_unet_model import DistillationUNetV2 as DistillationUNet
+from networks.d_unet_model_v2 import DistillationUNet
 from biomedclip_vpt import build_dual_selective_prompt_image_encoder
 from utils.text_sampler import TextSampler
 from torch.cuda.amp import GradScaler, autocast
@@ -47,6 +47,7 @@ from utils.training_helpers import (
     parse_alpha_schedule,
     update_ema_variables,
 )
+from utils.gaomatch import gapmatch_targeted_v1
 from val import ValidationConfig, run_validation
 
 # -------------------------------------------------------------------------
@@ -146,6 +147,10 @@ parser.add_argument('--dc_parts', type=int, default=5,
 parser.add_argument('--dc_distance_mode', type=str, default='prototype',
                     choices=['prototype', 'sqrt_prod'],
                     help='Distance metric for curriculum: prototype (L2) or sqrt_prod')
+parser.add_argument('--dc_quantile_batching', action='store_true',
+                    help='Enable stratified quantile sampling within each unlabeled batch (uses score distribution)')
+parser.add_argument('--dc_quantile_bins', type=int, default=0,
+                    help='Number of quantile bins per batch (default: unlabeled batch size)')
 parser.add_argument('--expend_test_samples', type=int, default=32,
                     help='Number of samples to test from next partition')
 parser.add_argument('--expend_test_steps_interval', type=int, default=100,
@@ -183,13 +188,6 @@ parser.add_argument('--du_bilinear', action='store_true',
                     help='Use bilinear upsampling in the Distillation U-Net decoder')
 parser.add_argument('--du_style_dim', type=int, default=512,
                     help='Latent dimension for the style head (when enabled)')
-parser.add_argument('--du_modulation', type=str, default='conditional',
-                    choices=['none', 'film', 'conditional', 'cbn'],
-                    help='Feature modulation strategy for Distillation U-Net')
-parser.add_argument('--du_r_rank', type=int, default=8,
-                    help='Low-rank dimension for affine generators in conditional/CBN modes')
-parser.add_argument('--du_alpha_schedule', type=str, default='0.04,0.08,0.12,0.16',
-                    help='Comma-separated alpha schedule for modulation scaling per encoder stage')
 parser.add_argument('--du_disable_style_head', action='store_true',
                     help='Disable the style head in Distillation U-Net')
 parser.add_argument('--du_disable_invariance_head', action='store_true',
@@ -217,6 +215,18 @@ distill_group.add_argument('--distill_mode', type=str, default='both',
                             choices=['both', 'invariant', 'specific', 'none'],
                             help='Select which feature groups participate in distillation')
 
+# ==================== GapMatch Configuration ====================
+gap_group = parser.add_argument_group('GapMatch Configuration')
+gap_group.add_argument('--enable_gapmatch', dest='enable_gapmatch', action='store_true',
+                       help='Enable GapMatch-based gradient perturbation for the student model')
+gap_group.add_argument('--disable_gapmatch', dest='enable_gapmatch', action='store_false',
+                       help='Disable GapMatch and fall back to the original single-pass training')
+parser.set_defaults(enable_gapmatch=True)
+gap_group.add_argument('--gap_epsilon', type=float, default=0.1,
+                       help='Perturbation radius (epsilon) used by GapMatch')
+gap_group.add_argument('--gap_gamma', type=float, default=0.5,
+                       help='Interpolation factor between pre/post-perturbation gradients')
+
 # ==================== BiomedCLIP with Visual Prompts ====================
 parser.add_argument('--biomedclip_path', type=str, default='/root/models/BiomedCLIP',
                     help='Root directory containing BiomedCLIP weights and config JSON')
@@ -228,12 +238,12 @@ parser.add_argument('--biomedclip_init_std', type=float, default=0.02,
                     help='Initialization std for prompt parameters')
 parser.add_argument('--biomedclip_prompt_scale_init', type=float, default=1.0,
                     help='Initial prompt scaling factor')
-parser.add_argument('--biomedclip_disable_scale', action='store_true',
-                    help='Disable learnable prompt scaling (fix to 1.0)')
 parser.add_argument('--biomedclip_lr', type=float, default=1e-4,
                     help='Learning rate for BiomedCLIP optimizer')
 parser.add_argument('--biomedclip_weight_decay', type=float, default=1e-2,
                     help='Weight decay for BiomedCLIP optimizer')
+parser.add_argument('--biomedclip_disable_scale', action='store_true',
+                    help='Disable learnable prompt scaling (fix to 1.0)')
 
 # ==================== Text Sampler ====================
 parser.add_argument('--text_root', type=str, default='/app/MixDSemi/SynFoCLIP/code/text',
@@ -243,10 +253,9 @@ parser.add_argument('--text_num_subsets', type=int, default=4,
 
 args = parser.parse_args()
 
-try:
-    args.du_alpha_schedule = parse_alpha_schedule(args.du_alpha_schedule)
-except ValueError as exc:
-    parser.error(f'Invalid --du_alpha_schedule: {exc}')
+if args.enable_gapmatch and args.amp:
+    print("[GapMatch] AMP is disabled to ensure stable multi-stage backward passes.")
+    args.amp = 0
 
 args.du_use_style_head = not args.du_disable_style_head
 args.du_use_invariance_head = not args.du_disable_invariance_head
@@ -287,9 +296,6 @@ def train(args, snapshot_path):
             n_classes=num_classes + 1,
             bilinear=args.du_bilinear,
             style_dim=args.du_style_dim,
-            modulation_type=args.du_modulation,
-            r_rank=args.du_r_rank,
-            alpha_schedule=args.du_alpha_schedule,
             use_invariance_head=args.du_use_invariance_head,
             use_style_head=args.du_use_style_head,
         )
@@ -300,6 +306,45 @@ def train(args, snapshot_path):
 
     unet_model = create_model()
     ema_unet_model = create_model(ema=True)
+
+    has_style_head = bool(getattr(unet_model, "use_style_head", False) and getattr(unet_model, "style_head", None) is not None)
+    has_invariance_head = bool(getattr(unet_model, "use_invariance_head", False) and getattr(unet_model, "invariance_head", None) is not None)
+    # args.distill_mode is expected to be a string from argparse; normalize safely
+    distill_mode_normalized = args.distill_mode.lower() if isinstance(args.distill_mode, str) else str(args.distill_mode).lower()
+    distill_active = (
+        args.distill_weight > 0
+        and distill_mode_normalized != "none"
+        and (has_style_head or has_invariance_head)
+    )
+
+    def _collect_module_params(modules):
+        seen = set()
+        params = []
+        for module in modules:
+            for param in module.parameters():
+                if param.requires_grad and id(param) not in seen:
+                    params.append(param)
+                    seen.add(id(param))
+        return params
+
+    gap_perturber = None
+    if args.enable_gapmatch:
+        encoder_modules = list(getattr(unet_model, "encoder_modules", []))
+        head_modules = list(getattr(unet_model, "head_modules", []))
+        decoder_modules = list(getattr(unet_model, "decoder_modules", []))
+
+        if distill_active:
+            encoder_params = _collect_module_params(encoder_modules + head_modules)
+            decoder_params = _collect_module_params(decoder_modules)
+        else:
+            encoder_params = []
+            decoder_params = _collect_module_params(encoder_modules + head_modules + decoder_modules)
+
+        gap_perturber = gapmatch_targeted_v1(
+            encoder_params=encoder_params,
+            decoder_params=decoder_params,
+            gamma=args.gap_gamma,
+        )
 
     max_iterations = args.max_iterations
     weak = transforms.Compose([tr.RandomScaleCrop(patch_size),
@@ -441,12 +486,42 @@ def train(args, snapshot_path):
         num_partitions=curriculum_partitions,
         distance_mode=getattr(args, 'dc_distance_mode', 'prototype'),
     )
-    curriculum_sampler = DomainDistanceCurriculumSampler(
-        partitions,
+
+    stratified_enabled = bool(getattr(args, 'dc_quantile_batching', False))
+    stratified_bins = int(getattr(args, 'dc_quantile_bins', 0) or 0)
+    if stratified_enabled:
+        if args.unlabel_bs is None or args.unlabel_bs <= 0:
+            logging.warning(
+                "Quantile batching requested but unlabeled batch size is invalid (value=%s); disabling.",
+                str(args.unlabel_bs),
+            )
+            stratified_enabled = False
+        elif stratified_bins <= 0:
+            stratified_bins = int(args.unlabel_bs)
+        if stratified_enabled and stratified_bins <= 1:
+            logging.warning(
+                "Quantile batching requested but computed bin count=%d; disabling.",
+                stratified_bins,
+            )
+            stratified_enabled = False
+
+    sampler_kwargs = dict(
+        partitions=partitions,
         initial_stage=1,
         seed=args.seed,
         shuffle=True,
     )
+    if stratified_enabled:
+        sampler_kwargs.update(
+            score_lookup=unlabeled_scores,
+            stratified_batch_size=stratified_bins,
+        )
+        logging.info(
+            "Curriculum sampler stratified quantile batching ENABLED (bins=%d, unlabeled_bs=%d)",
+            stratified_bins,
+            args.unlabel_bs,
+        )
+    curriculum_sampler = DomainDistanceCurriculumSampler(**sampler_kwargs)
 
     test_dataset = []
     test_dataloader = []
@@ -550,8 +625,11 @@ def train(args, snapshot_path):
     best_avg_dice_iter = -1
     dice_of_best_avg = [0.0] * n_part
 
-    scaler = GradScaler()
-    amp_cm = autocast if args.amp else contextlib.nullcontext
+    amp_enabled = bool(args.amp and not args.enable_gapmatch)
+    if args.amp and args.enable_gapmatch and not amp_enabled:
+        logging.warning("AMP is disabled because GapMatch perturbations require full-precision gradients.")
+    scaler = GradScaler(enabled=amp_enabled)
+    amp_cm = autocast if amp_enabled else contextlib.nullcontext
 
     if curriculum_sampler.stage < len(partitions):
         next_partition_indices = partitions[curriculum_sampler.stage]
@@ -702,214 +780,357 @@ def train(args, snapshot_path):
             else:
                 move_transx = lb_unet_size_x_w
 
-            with amp_cm():
-                apply_ul = args.symgd_mode in ("full", "ul_only")
-                apply_lu = args.symgd_mode == "full"
-                cutmix_active = apply_ul or apply_lu
+            apply_ul = args.symgd_mode in ("full", "ul_only")
+            apply_lu = args.symgd_mode == "full"
+            cutmix_active = apply_ul or apply_lu
 
-                mask_teacher: torch.Tensor | None = None
-                mask_ul: torch.Tensor | None = None
-                mask_lu: torch.Tensor | None = None
-                mask_w: torch.Tensor | None = None
-                ensemble: torch.Tensor | None = None
-                unet_size_img_box: torch.Tensor | None = None
-                unet_size_label_box: torch.Tensor | None = None
-                unet_size_pseudo_label_ul: torch.Tensor | None = None
-                unet_size_pseudo_label_lu: torch.Tensor | None = None
-                pseudo_label_w: torch.Tensor | None = None
+            mask_teacher: torch.Tensor | None = None
+            mask_ul: torch.Tensor | None = None
+            mask_lu: torch.Tensor | None = None
+            mask_w: torch.Tensor | None = None
+            ensemble: torch.Tensor | None = None
+            unet_size_img_box: torch.Tensor | None = None
+            unet_size_label_box: torch.Tensor | None = None
+            unet_size_pseudo_label_ul: torch.Tensor | None = None
+            unet_size_pseudo_label_lu: torch.Tensor | None = None
+            pseudo_label_w: torch.Tensor | None = None
 
-                with torch.no_grad():
-                    # 1. Original unlabeled image pseudo-labels
-                    unet_logits_ulb_x_w = ema_unet_model(ulb_unet_size_x_w)
-                    unet_prob_ulb_x_w = torch.softmax(unet_logits_ulb_x_w, dim=1)
-                    unet_prob, unet_pseudo_label = torch.max(unet_prob_ulb_x_w, dim=1)
-                    mask_teacher = (unet_prob > threshold).unsqueeze(1).float()
+            with torch.no_grad():
+                # 1. Original unlabeled image pseudo-labels
+                unet_logits_ulb_x_w = ema_unet_model(ulb_unet_size_x_w)
+                unet_prob_ulb_x_w = torch.softmax(unet_logits_ulb_x_w, dim=1)
+                unet_prob, unet_pseudo_label = torch.max(unet_prob_ulb_x_w, dim=1)
+                mask_teacher = (unet_prob > threshold).unsqueeze(1).float()
 
-                    mask_w = mask_teacher.clone()
-                    pseudo_label_w = unet_pseudo_label.long()
-                    ensemble = torch.ones_like(mask_teacher)
-                    mask_ul = torch.zeros_like(mask_teacher)
-                    mask_lu = torch.zeros_like(mask_teacher)
+                mask_w = mask_teacher.clone()
+                pseudo_label_w = unet_pseudo_label.long()
+                ensemble = torch.ones_like(mask_teacher)
+                mask_ul = torch.zeros_like(mask_teacher)
+                mask_lu = torch.zeros_like(mask_teacher)
 
-                    if cutmix_active:
-                        # Generate CutMix box (only used when SymGD is active)
-                        device = lb_unet_size_x_w.device
-                        unet_size_label_box = torch.stack(
-                            [
-                                obtain_cutmix_box(
-                                    img_size=patch_size,
-                                    p=1.0,
-                                    device=device,
-                                )
-                                for _ in range(len(ulb_unet_size_x_w))
-                            ],
-                            dim=0,
-                        )
-                        unet_size_img_box = unet_size_label_box.unsqueeze(1)
+                if cutmix_active:
+                    # Generate CutMix box (only used when SymGD is active)
+                    device = lb_unet_size_x_w.device
+                    unet_size_label_box = torch.stack(
+                        [
+                            obtain_cutmix_box(
+                                img_size=patch_size,
+                                p=1.0,
+                                device=device,
+                            )
+                            for _ in range(len(ulb_unet_size_x_w))
+                        ],
+                        dim=0,
+                    )
+                    unet_size_img_box = unet_size_label_box.unsqueeze(1)
 
-                        if apply_ul:
-                            # UL mixing (Unlabeled background + Labeled foreground)
-                            ulb_x_w_ul = ulb_unet_size_x_w * (1 - unet_size_img_box) + lb_unet_size_x_w * unet_size_img_box
-                            logits_w_ul = ema_unet_model(ulb_x_w_ul)
-                            prob_w_ul = torch.softmax(logits_w_ul, dim=1)
-                            conf_w_ul, pseudo_label_w_ul = torch.max(prob_w_ul, dim=1)
-                            mask_w_ul = (conf_w_ul > threshold).unsqueeze(1).float()
+                    if apply_ul:
+                        # UL mixing (Unlabeled background + Labeled foreground)
+                        ulb_x_w_ul = ulb_unet_size_x_w * (1 - unet_size_img_box) + lb_unet_size_x_w * unet_size_img_box
+                        logits_w_ul = ema_unet_model(ulb_x_w_ul)
+                        prob_w_ul = torch.softmax(logits_w_ul, dim=1)
+                        conf_w_ul, pseudo_label_w_ul = torch.max(prob_w_ul, dim=1)
+                        mask_w_ul = (conf_w_ul > threshold).unsqueeze(1).float()
 
-                            mask_ul = mask_teacher.clone()
-                            mask_ul[unet_size_img_box.expand_as(mask_ul) == 1] = 1
-                            unet_size_pseudo_label_ul = (
-                                unet_pseudo_label * (1 - unet_size_label_box)
-                                + lb_unet_size_mask * unet_size_label_box
-                            ).long()
-                        else:
-                            mask_w_ul = None
-
-                        if apply_lu:
-                            # LU mixing (Labeled background + Unlabeled foreground)
-                            ulb_x_w_lu = lb_unet_size_x_w * (1 - unet_size_img_box) + ulb_unet_size_x_w * unet_size_img_box
-                            logits_w_lu = ema_unet_model(ulb_x_w_lu)
-                            prob_w_lu = torch.softmax(logits_w_lu, dim=1)
-                            conf_w_lu, pseudo_label_w_lu = torch.max(prob_w_lu, dim=1)
-                            mask_w_lu = (conf_w_lu > threshold).unsqueeze(1).float()
-
-                            mask_lu = mask_teacher.clone()
-                            mask_lu[unet_size_img_box.expand_as(mask_lu) == 0] = 1
-                            unet_size_pseudo_label_lu = (
-                                lb_unet_size_mask * (1 - unet_size_label_box)
-                                + unet_pseudo_label * unet_size_label_box
-                            ).long()
-                        else:
-                            mask_w_lu = None
-
-                        if apply_ul and apply_lu:
-                            mask_w = mask_w_ul * (1 - unet_size_img_box) + mask_w_lu * unet_size_img_box
-                            pseudo_label_w = (
-                                pseudo_label_w_ul * (1 - unet_size_label_box)
-                                + pseudo_label_w_lu * unet_size_label_box
-                            ).long()
-                        elif apply_ul:
-                            mask_w = mask_w_ul
-                            pseudo_label_w = pseudo_label_w_ul.long()
-                        elif apply_lu:
-                            mask_w = mask_w_lu
-                            pseudo_label_w = pseudo_label_w_lu.long()
-
-                    if args.use_symgd:
-                        ensemble = (pseudo_label_w == unet_pseudo_label).unsqueeze(1).float() * mask_teacher
-                        mask_w = mask_w.clone()
-                        mask_w[ensemble == 0] = 0
+                        mask_ul = mask_teacher.clone()
+                        mask_ul[unet_size_img_box.expand_as(mask_ul) == 1] = 1
+                        unet_size_pseudo_label_ul = (
+                            unet_pseudo_label * (1 - unet_size_label_box)
+                            + lb_unet_size_mask * unet_size_label_box
+                        ).long()
                     else:
-                        ensemble = torch.ones_like(mask_teacher)
+                        mask_w_ul = None
 
-                mask = mask_teacher
-                device = lb_unet_size_x_w.device
-                zero = lb_unet_size_x_w.new_tensor(0.0)
+                    if apply_lu:
+                        # LU mixing (Labeled background + Unlabeled foreground)
+                        ulb_x_w_lu = lb_unet_size_x_w * (1 - unet_size_img_box) + ulb_unet_size_x_w * unet_size_img_box
+                        logits_w_lu = ema_unet_model(ulb_x_w_lu)
+                        prob_w_lu = torch.softmax(logits_w_lu, dim=1)
+                        conf_w_lu, pseudo_label_w_lu = torch.max(prob_w_lu, dim=1)
+                        mask_w_lu = (conf_w_lu > threshold).unsqueeze(1).float()
 
-                # Cache additional representations for downstream tasks
-                # ========== Student Model Forward Passes ==========
-                unet_logits_lb_x_w, lb_u_inv, lb_u_spec = unet_model(lb_unet_size_x_w, training=True)
-                unet_unsup_loss_ul = zero
-                if apply_ul and unet_size_img_box is not None and unet_size_pseudo_label_ul is not None:
-                    ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1 - unet_size_img_box) + move_transx * unet_size_img_box
-                    # CutMix branch only needs logits; auxiliary heads are ignored
-                    unet_logits_ulb_x_s_ul, _, _ = unet_model(ulb_unet_size_x_s_ul, training=True)
-                    unet_unsup_loss_ul = (
-                        ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * mask_ul.squeeze(1)
-                    ).mean() + dice_loss(
-                        unet_logits_ulb_x_s_ul,
-                        unet_size_pseudo_label_ul.unsqueeze(1),
-                        mask=mask_ul,
-                        softmax=softmax,
-                        sigmoid=sigmoid,
-                        multi=multi,
-                    )
+                        mask_lu = mask_teacher.clone()
+                        mask_lu[unet_size_img_box.expand_as(mask_lu) == 0] = 1
+                        unet_size_pseudo_label_lu = (
+                            lb_unet_size_mask * (1 - unet_size_label_box)
+                            + unet_pseudo_label * unet_size_label_box
+                        ).long()
+                    else:
+                        mask_w_lu = None
 
-                unet_unsup_loss_lu = zero
-                if apply_lu and unet_size_img_box is not None and unet_size_pseudo_label_lu is not None:
-                    ulb_unet_size_x_s_lu = move_transx * (1 - unet_size_img_box) + ulb_unet_size_x_s * unet_size_img_box
-                    # CutMix branch only needs logits; auxiliary heads are ignored
-                    unet_logits_ulb_x_s_lu, _, _ = unet_model(ulb_unet_size_x_s_lu, training=True)
-                    unet_unsup_loss_lu = (
-                        ce_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu) * mask_lu.squeeze(1)
-                    ).mean() + dice_loss(
-                        unet_logits_ulb_x_s_lu,
-                        unet_size_pseudo_label_lu.unsqueeze(1),
-                        mask=mask_lu,
-                        softmax=softmax,
-                        sigmoid=sigmoid,
-                        multi=multi,
-                    )
+                    if apply_ul and apply_lu:
+                        mask_w = mask_w_ul * (1 - unet_size_img_box) + mask_w_lu * unet_size_img_box
+                        pseudo_label_w = (
+                            pseudo_label_w_ul * (1 - unet_size_label_box)
+                            + pseudo_label_w_lu * unet_size_label_box
+                        ).long()
+                    elif apply_ul:
+                        mask_w = mask_w_ul
+                        pseudo_label_w = pseudo_label_w_ul.long()
+                    elif apply_lu:
+                        mask_w = mask_w_lu
+                        pseudo_label_w = pseudo_label_w_lu.long()
 
-                unet_logits_ulb_x_s, ulb_u_inv, ulb_u_spec = unet_model(ulb_unet_size_x_s, training=True)
-                unet_unsup_loss_s = (
-                    ce_loss(unet_logits_ulb_x_s, pseudo_label_w) * mask_w.squeeze(1)
-                ).mean() + dice_loss(
-                    unet_logits_ulb_x_s,
-                    pseudo_label_w.unsqueeze(1),
-                    mask=mask_w,
-                    softmax=softmax,
-                    sigmoid=sigmoid,
-                    multi=multi,
-                )
-
-                loss_distill = compute_distillation_loss(
-                # --- 学生特征 (来自 UNet) ---
-                lb_u_inv=lb_u_inv,           # L_w (学生) 不变特征
-                lb_u_spec=lb_u_spec,         # L_w (学生) 特定特征
-                ulb_u_inv_s=ulb_u_inv,       # U_s (学生) 不变特征
-                ulb_u_spec_s=ulb_u_spec,     # U_s (学生) 特定特征
-                
-                # --- 教师特征 (来自 CLIP, 必须已 detach) ---
-                v_inv_lb_teacher=v_inv_lb_teacher,     # L_w (教师) 不变特征
-                v_spec_lb_teacher=v_spec_lb_teacher,   # L_w (教师) 特定特征
-                v_inv_ulb_teacher_w=v_inv_ulb_teacher_w, # U_w (教师) 不变特征
-                v_spec_ulb_teacher_w=v_spec_ulb_teacher_w,  # U_w (教师) 特定特征
-                mode=args.distill_mode,
-                )
-                loss_distill = args.distill_weight * loss_distill
-
-
-                # Calculate dice on unlabeled data for monitoring
-                if args.dataset == 'fundus':
-                    unet_pseudo_label_2layer = to_2d(unet_pseudo_label)
-                    ulb_unet_size_mask_2layer = to_2d(ulb_unet_size_mask)
-                    unet_ulb_dice = dice_calcu[args.dataset](np.asarray(unet_pseudo_label_2layer.cpu()), ulb_unet_size_mask_2layer.cpu())
+                if args.use_symgd:
+                    ensemble = (pseudo_label_w == unet_pseudo_label).unsqueeze(1).float() * mask_teacher
+                    mask_w = mask_w.clone()
+                    mask_w[ensemble == 0] = 0
                 else:
-                    unet_ulb_dice = dice_calcu[args.dataset](np.asarray(unet_pseudo_label.cpu()), ulb_unet_size_mask.cpu())
-                for n, p in enumerate(part):
-                    unet_ulb_dice_sta[n].update(unet_ulb_dice[n])
+                    ensemble = torch.ones_like(mask_teacher)
 
-                # Supervised loss
-                unet_sup_loss = ce_loss(unet_logits_lb_x_w, lb_unet_size_mask).mean() + \
-                            dice_loss(unet_logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
-                
-                if args.consistency_rampup > 0:
-                    rampup_progress = iter_num / max(1.0, max_iterations / args.consistency_rampup)
+            mask = mask_teacher
+            device = lb_unet_size_x_w.device
+            zero = lb_unet_size_x_w.new_tensor(0.0)
+
+            # Calculate dice on unlabeled data for monitoring
+            if args.dataset == 'fundus':
+                unet_pseudo_label_2layer = to_2d(unet_pseudo_label)
+                ulb_unet_size_mask_2layer = to_2d(ulb_unet_size_mask)
+                unet_ulb_dice = dice_calcu[args.dataset](np.asarray(unet_pseudo_label_2layer.cpu()), ulb_unet_size_mask_2layer.cpu())
+            else:
+                unet_ulb_dice = dice_calcu[args.dataset](np.asarray(unet_pseudo_label.cpu()), ulb_unet_size_mask.cpu())
+            for n, p in enumerate(part):
+                unet_ulb_dice_sta[n].update(unet_ulb_dice[n])
+
+            if args.consistency_rampup > 0:
+                elapsed_since_stage_update = iter_num - last_stage_update_iter
+                expected_steps_base = max(1, int(getattr(args, 'expend_max_steps', 1)))
+
+                try:
+                    is_last_stage = (curriculum_sampler is not None and curriculum_sampler.stage >= len(partitions))
+                except Exception:
+                    is_last_stage = False
+
+                if is_last_stage:
+                    expected_steps_base = max(1, int(max_iterations - iter_num))
+
+                if args.consistency_rampup >= 1:
+                    steps_per_epoch = max(1.0, expected_steps_base / float(args.consistency_rampup))
                 else:
-                    rampup_progress = 0.0
+                    steps_per_epoch = float(expected_steps_base)
+
+                epoch_in_stage = float(elapsed_since_stage_update) / steps_per_epoch
+
                 consistency_weight = compute_consistency_weight(
-                    epoch=rampup_progress,
+                    epoch=epoch_in_stage,
                     base_weight=args.consistency,
-                    rampup_length=args.consistency_rampup,
+                    rampup_length=float(args.consistency_rampup),
+                )
+            else:
+                consistency_weight = compute_consistency_weight(
+                    epoch=0.0,
+                    base_weight=args.consistency,
+                    rampup_length=1.0,
                 )
 
-                # UL unsupervised loss
-                unet_unsup_loss_ul = (ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * 
-                                      mask_ul.squeeze(1)).mean() + \
-                                     dice_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul.unsqueeze(1), 
-                                              mask=mask_ul, softmax=softmax, sigmoid=sigmoid, multi=multi)
+            if args.enable_gapmatch:
+                if gap_perturber is None:
+                    raise RuntimeError("GapMatch perturber is not initialized.")
 
-                # LU unsupervised loss
-                unet_unsup_loss_lu = (ce_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu) * 
-                                      mask_lu.squeeze(1)).mean() + \
-                                     dice_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu.unsqueeze(1), 
-                                              mask=mask_lu, softmax=softmax, sigmoid=sigmoid, multi=multi)
+                def compute_student_objectives():
+                    logits_lb_x_w, lb_u_inv_x, lb_u_spec_x = unet_model(lb_unet_size_x_w, training=True)
+                    sup_loss = ce_loss(logits_lb_x_w, lb_unet_size_mask).mean() + \
+                        dice_loss(logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
 
-                # Strong augmentation consistency loss
-                unet_unsup_loss_s = (ce_loss(unet_logits_ulb_x_s, pseudo_label_w) * 
-                                     mask_w.squeeze(1)).mean() + \
-                                    dice_loss(unet_logits_ulb_x_s, pseudo_label_w.unsqueeze(1), 
-                                             mask=mask_w, softmax=softmax, sigmoid=sigmoid, multi=multi)
+                    unsup_ul_local = zero
+                    if apply_ul and unet_size_img_box is not None and unet_size_pseudo_label_ul is not None:
+                        ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1 - unet_size_img_box) + move_transx * unet_size_img_box
+                        logits_ulb_x_s_ul, _, _ = unet_model(ulb_unet_size_x_s_ul, training=True)
+                        unsup_ul_local = (
+                            ce_loss(logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * mask_ul.squeeze(1)
+                        ).mean() + dice_loss(
+                            logits_ulb_x_s_ul,
+                            unet_size_pseudo_label_ul.unsqueeze(1),
+                            mask=mask_ul,
+                            softmax=softmax,
+                            sigmoid=sigmoid,
+                            multi=multi,
+                        )
+
+                    unsup_lu_local = zero
+                    if apply_lu and unet_size_img_box is not None and unet_size_pseudo_label_lu is not None:
+                        ulb_unet_size_x_s_lu = move_transx * (1 - unet_size_img_box) + ulb_unet_size_x_s * unet_size_img_box
+                        logits_ulb_x_s_lu, _, _ = unet_model(ulb_unet_size_x_s_lu, training=True)
+                        unsup_lu_local = (
+                            ce_loss(logits_ulb_x_s_lu, unet_size_pseudo_label_lu) * mask_lu.squeeze(1)
+                        ).mean() + dice_loss(
+                            logits_ulb_x_s_lu,
+                            unet_size_pseudo_label_lu.unsqueeze(1),
+                            mask=mask_lu,
+                            softmax=softmax,
+                            sigmoid=sigmoid,
+                            multi=multi,
+                        )
+
+                    logits_ulb_x_s_local, ulb_u_inv_x, ulb_u_spec_x = unet_model(ulb_unet_size_x_s, training=True)
+                    unsup_s_local = (
+                        ce_loss(logits_ulb_x_s_local, pseudo_label_w) * mask_w.squeeze(1)
+                    ).mean() + dice_loss(
+                        logits_ulb_x_s_local,
+                        pseudo_label_w.unsqueeze(1),
+                        mask=mask_w,
+                        softmax=softmax,
+                        sigmoid=sigmoid,
+                        multi=multi,
+                    )
+
+                    if distill_active:
+                        distill_components = losses.compute_distillation_components(
+                            lb_u_inv=lb_u_inv_x,
+                            lb_u_spec=lb_u_spec_x,
+                            ulb_u_inv_s=ulb_u_inv_x,
+                            ulb_u_spec_s=ulb_u_spec_x,
+                            v_inv_lb_teacher=v_inv_lb_teacher,
+                            v_spec_lb_teacher=v_spec_lb_teacher,
+                            v_inv_ulb_teacher_w=v_inv_ulb_teacher_w,
+                            v_spec_ulb_teacher_w=v_spec_ulb_teacher_w,
+                            mode=args.distill_mode,
+                        )
+                        distill_total = distill_components.total
+                        distill_inv = distill_components.invariant
+                        distill_spec = distill_components.specific
+                    else:
+                        zero_scalar = sup_loss.new_zeros(())
+                        distill_total = zero_scalar
+                        distill_inv = None
+                        distill_spec = None
+
+                    return {
+                        'sup_loss': sup_loss,
+                        'ul_loss': unsup_ul_local,
+                        'lu_loss': unsup_lu_local,
+                        'cons_loss': unsup_s_local,
+                        'distill_total': distill_total,
+                        'distill_inv': distill_inv,
+                        'distill_spec': distill_spec,
+                    }
+
+                unet_optimizer.zero_grad()
+
+                first_pass = compute_student_objectives()
+                unet_unsup_loss_ul = first_pass['ul_loss']
+                unet_unsup_loss_lu = first_pass['lu_loss']
+                unet_unsup_loss_s = first_pass['cons_loss']
+                ul_term = args.ul_weight * unet_unsup_loss_ul
+                lu_term = args.lu_weight * unet_unsup_loss_lu
+                cons_term = args.cons_weight * unet_unsup_loss_s
+                unsup_weighted = consistency_weight * (ul_term + lu_term + cons_term)
+
+                if distill_active:
+                    distill_encoder_pre = first_pass['sup_loss'].new_zeros(())
+                    if has_invariance_head and first_pass['distill_inv'] is not None:
+                        distill_encoder_pre = distill_encoder_pre + args.distill_weight * first_pass['distill_inv']
+                    if has_style_head and first_pass['distill_spec'] is not None:
+                        distill_encoder_pre = distill_encoder_pre + args.distill_weight * first_pass['distill_spec']
+                else:
+                    distill_encoder_pre = first_pass['sup_loss'].new_zeros(())
+
+                (unsup_weighted + distill_encoder_pre).backward()
+
+                gap_perturber.perturb(epsilon=args.gap_epsilon)
+                unet_optimizer.zero_grad()
+
+                second_pass = compute_student_objectives()
+                unet_unsup_loss_ul = second_pass['ul_loss']
+                unet_unsup_loss_lu = second_pass['lu_loss']
+                unet_unsup_loss_s = second_pass['cons_loss']
+                ul_term = args.ul_weight * unet_unsup_loss_ul
+                lu_term = args.lu_weight * unet_unsup_loss_lu
+                cons_term = args.cons_weight * unet_unsup_loss_s
+                unsup_weighted = consistency_weight * (ul_term + lu_term + cons_term)
+
+                if distill_active:
+                    distill_encoder_post = second_pass['sup_loss'].new_zeros(())
+                    if has_invariance_head and second_pass['distill_inv'] is not None:
+                        distill_encoder_post = distill_encoder_post + args.distill_weight * second_pass['distill_inv']
+                    if has_style_head and second_pass['distill_spec'] is not None:
+                        distill_encoder_post = distill_encoder_post + args.distill_weight * second_pass['distill_spec']
+                else:
+                    distill_encoder_post = second_pass['sup_loss'].new_zeros(())
+
+                (unsup_weighted + distill_encoder_post).backward()
+
+                gap_perturber.restore()
+
+                final_pass = compute_student_objectives()
+                final_sup = final_pass['sup_loss']
+                final_sup.backward()
+                unet_optimizer.step()
+
+                unet_sup_loss = final_sup.detach()
+                unet_unsup_loss_ul = final_pass['ul_loss'].detach()
+                unet_unsup_loss_lu = final_pass['lu_loss'].detach()
+                unet_unsup_loss_s = final_pass['cons_loss'].detach()
+                ul_term = args.ul_weight * unet_unsup_loss_ul
+                lu_term = args.lu_weight * unet_unsup_loss_lu
+                cons_term = args.cons_weight * unet_unsup_loss_s
+                if distill_active:
+                    loss_distill = args.distill_weight * final_pass['distill_total'].detach()
+                else:
+                    loss_distill = unet_sup_loss.new_zeros(())
+                loss = unet_sup_loss + consistency_weight * (ul_term + lu_term + cons_term) + loss_distill
+
+            else:
+                with amp_cm():
+                    # Cache additional representations for downstream tasks
+                    unet_logits_lb_x_w, lb_u_inv, lb_u_spec = unet_model(lb_unet_size_x_w, training=True)
+                    unet_unsup_loss_ul = zero
+                    if apply_ul and unet_size_img_box is not None and unet_size_pseudo_label_ul is not None:
+                        ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1 - unet_size_img_box) + move_transx * unet_size_img_box
+                        unet_logits_ulb_x_s_ul, _, _ = unet_model(ulb_unet_size_x_s_ul, training=True)
+                        unet_unsup_loss_ul = (ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) *
+                                              mask_ul.squeeze(1)).mean() + \
+                                             dice_loss(
+                                                 unet_logits_ulb_x_s_ul,
+                                                 unet_size_pseudo_label_ul.unsqueeze(1),
+                                                 mask=mask_ul,
+                                                 softmax=softmax,
+                                                 sigmoid=sigmoid,
+                                                 multi=multi,
+                                             )
+
+                    unet_unsup_loss_lu = zero
+                    if apply_lu and unet_size_img_box is not None and unet_size_pseudo_label_lu is not None:
+                        ulb_unet_size_x_s_lu = move_transx * (1 - unet_size_img_box) + ulb_unet_size_x_s * unet_size_img_box
+                        unet_logits_ulb_x_s_lu, _, _ = unet_model(ulb_unet_size_x_s_lu, training=True)
+                        unet_unsup_loss_lu = (ce_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu) *
+                                              mask_lu.squeeze(1)).mean() + \
+                                             dice_loss(
+                                                 unet_logits_ulb_x_s_lu,
+                                                 unet_size_pseudo_label_lu.unsqueeze(1),
+                                                 mask=mask_lu,
+                                                 softmax=softmax,
+                                                 sigmoid=sigmoid,
+                                                 multi=multi,
+                                             )
+
+                    unet_logits_ulb_x_s, ulb_u_inv, ulb_u_spec = unet_model(ulb_unet_size_x_s, training=True)
+                    unet_unsup_loss_s = (ce_loss(unet_logits_ulb_x_s, pseudo_label_w) *
+                                         mask_w.squeeze(1)).mean() + \
+                                        dice_loss(
+                                            unet_logits_ulb_x_s,
+                                            pseudo_label_w.unsqueeze(1),
+                                            mask=mask_w,
+                                            softmax=softmax,
+                                            sigmoid=sigmoid,
+                                            multi=multi,
+                                        )
+
+                    loss_distill = compute_distillation_loss(
+                        lb_u_inv=lb_u_inv,
+                        lb_u_spec=lb_u_spec,
+                        ulb_u_inv_s=ulb_u_inv,
+                        ulb_u_spec_s=ulb_u_spec,
+                        v_inv_lb_teacher=v_inv_lb_teacher,
+                        v_spec_lb_teacher=v_spec_lb_teacher,
+                        v_inv_ulb_teacher_w=v_inv_ulb_teacher_w,
+                        v_spec_ulb_teacher_w=v_spec_ulb_teacher_w,
+                        mode=args.distill_mode,
+                    )
+                    loss_distill = args.distill_weight * loss_distill
+
+                    unet_sup_loss = ce_loss(unet_logits_lb_x_w, lb_unet_size_mask).mean() + \
+                        dice_loss(unet_logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
 
                 ul_term = args.ul_weight * unet_unsup_loss_ul
                 lu_term = args.lu_weight * unet_unsup_loss_lu
@@ -917,14 +1138,15 @@ def train(args, snapshot_path):
                 
                 loss = unet_sup_loss + consistency_weight * (ul_term + lu_term + cons_term) + loss_distill
 
-            unet_optimizer.zero_grad()
-            if args.amp:
-                scaler.scale(loss).backward()
-                scaler.step(unet_optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                unet_optimizer.step()
+            if not args.enable_gapmatch:
+                unet_optimizer.zero_grad()
+                if args.amp:
+                    scaler.scale(loss).backward()
+                    scaler.step(unet_optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    unet_optimizer.step()
 
             update_ema_variables(unet_model, ema_unet_model, args.ema_decay, iter_num)
 
@@ -1144,11 +1366,28 @@ def train(args, snapshot_path):
             writer.add_scalar('train/ul_weight_term', ul_term.item(), iter_num)
             writer.add_scalar('train/lu_weight_term', lu_term.item(), iter_num)
             writer.add_scalar('train/cons_weight_term', cons_term.item(), iter_num)
+            # Distillation metrics: total (already computed) and split components when available
             writer.add_scalar('train/loss_distill', loss_distill.item(), iter_num)
             writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
             writer.add_scalar('train/learning_rate', unet_optimizer.param_groups[0]['lr'], iter_num)
             writer.add_scalar('train/threshold', threshold, iter_num)
             writer.add_scalar('train/curriculum_stage', curriculum_sampler.stage, iter_num)
+            # Every 50 iters also emit a condensed log line to the main logfile/terminal with key scalars
+            if iter_num % 50 == 0:
+                logging.info(
+                    "iter %d: loss=%.6f, L=%.6f, UL=%.6f, LU=%.6f, S=%.6f, distill=%.6f, clip_mv=%.6f, clip_ortho=%.6f, clip_sw=%.6f, cons_w=%.6f",
+                    iter_num,
+                    float(loss.item() if hasattr(loss, 'item') else float(loss)),
+                    float(unet_sup_loss.item() if hasattr(unet_sup_loss, 'item') else float(unet_sup_loss)),
+                    float(unet_unsup_loss_ul.item() if hasattr(unet_unsup_loss_ul, 'item') else float(unet_unsup_loss_ul)),
+                    float(unet_unsup_loss_lu.item() if hasattr(unet_unsup_loss_lu, 'item') else float(unet_unsup_loss_lu)),
+                    float(unet_unsup_loss_s.item() if hasattr(unet_unsup_loss_s, 'item') else float(unet_unsup_loss_s)),
+                    float(loss_distill.item() if hasattr(loss_distill, 'item') else float(loss_distill)),
+                    float(clip_loss_components.mv_anchor.item() if hasattr(clip_loss_components.mv_anchor, 'item') else float(clip_loss_components.mv_anchor)),
+                    float(clip_loss_components.ortho.item() if hasattr(clip_loss_components.ortho, 'item') else float(clip_loss_components.ortho)),
+                    float(clip_loss_components.sw_reg.item() if hasattr(clip_loss_components.sw_reg, 'item') else float(clip_loss_components.sw_reg)),
+                    float(consistency_weight),
+                )
             if p_bar is not None:
                 p_bar.update()
 

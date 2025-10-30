@@ -813,44 +813,15 @@ def train(args, snapshot_path):
                     ulb_unet_size_x_s_ul = ulb_unet_size_x_s * (1 - unet_size_img_box) + move_transx * unet_size_img_box
                     # CutMix branch only needs logits; auxiliary heads are ignored
                     unet_logits_ulb_x_s_ul, _, _ = unet_model(ulb_unet_size_x_s_ul, training=True)
-                    unet_unsup_loss_ul = (
-                        ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * mask_ul.squeeze(1)
-                    ).mean() + dice_loss(
-                        unet_logits_ulb_x_s_ul,
-                        unet_size_pseudo_label_ul.unsqueeze(1),
-                        mask=mask_ul,
-                        softmax=softmax,
-                        sigmoid=sigmoid,
-                        multi=multi,
-                    )
 
                 unet_unsup_loss_lu = zero
                 if apply_lu and unet_size_img_box is not None and unet_size_pseudo_label_lu is not None:
                     ulb_unet_size_x_s_lu = move_transx * (1 - unet_size_img_box) + ulb_unet_size_x_s * unet_size_img_box
                     # CutMix branch only needs logits; auxiliary heads are ignored
                     unet_logits_ulb_x_s_lu, _, _ = unet_model(ulb_unet_size_x_s_lu, training=True)
-                    unet_unsup_loss_lu = (
-                        ce_loss(unet_logits_ulb_x_s_lu, unet_size_pseudo_label_lu) * mask_lu.squeeze(1)
-                    ).mean() + dice_loss(
-                        unet_logits_ulb_x_s_lu,
-                        unet_size_pseudo_label_lu.unsqueeze(1),
-                        mask=mask_lu,
-                        softmax=softmax,
-                        sigmoid=sigmoid,
-                        multi=multi,
-                    )
 
                 unet_logits_ulb_x_s, ulb_u_inv, ulb_u_spec = unet_model(ulb_unet_size_x_s, training=True)
-                unet_unsup_loss_s = (
-                    ce_loss(unet_logits_ulb_x_s, pseudo_label_w) * mask_w.squeeze(1)
-                ).mean() + dice_loss(
-                    unet_logits_ulb_x_s,
-                    pseudo_label_w.unsqueeze(1),
-                    mask=mask_w,
-                    softmax=softmax,
-                    sigmoid=sigmoid,
-                    multi=multi,
-                )
+                # Note: unsupervised losses for UL/LU/S are computed later (after distillation loss)
 
                 loss_distill = compute_distillation_loss(
                 # --- 学生特征 (来自 UNet) ---
@@ -883,15 +854,51 @@ def train(args, snapshot_path):
                 unet_sup_loss = ce_loss(unet_logits_lb_x_w, lb_unet_size_mask).mean() + \
                             dice_loss(unet_logits_lb_x_w, lb_unet_size_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
                 
+                # ====== 分阶段一致性权重计算（结合 args.consistency_rampup 作为 epoch 单位） ======
+                # 目标：每次 curriculum_sampler 扩张后重置 ramp；每段的步数基于
+                # args.expend_max_steps（中间阶段）或剩余训练步数（最后阶段）。
+                # 同时保留 args.consistency_rampup 的语义：它表示每段 ramp 的 epoch 长度，
+                # 因此需要把步数映射为 epoch：
+                #   epoch = elapsed_steps / (expected_steps / consistency_rampup)
+                # 然后调用 compute_consistency_weight(epoch, base_weight, rampup_length=consistency_rampup)
                 if args.consistency_rampup > 0:
-                    rampup_progress = iter_num / max(1.0, max_iterations / args.consistency_rampup)
+                    # 已过步数（自上次 expand 重置以来）
+                    elapsed_since_stage_update = iter_num - last_stage_update_iter
+
+                    # 基础期望步数（中间阶段使用 expend_max_steps）
+                    expected_steps_base = max(1, int(getattr(args, 'expend_max_steps', 1)))
+
+                    # 判断是否为最后阶段（若为最后阶段，使用剩余训练步数）
+                    try:
+                        is_last_stage = (curriculum_sampler is not None and curriculum_sampler.stage >= len(partitions))
+                    except Exception:
+                        is_last_stage = False
+
+                    if is_last_stage:
+                        expected_steps_base = max(1, int(max_iterations - iter_num))
+
+                    # 将步数映射为 epoch：每段 expected_steps_base 对应 args.consistency_rampup 个 epoch
+                    # 避免除以零或非常小的值
+                    if args.consistency_rampup >= 1:
+                        steps_per_epoch = max(1.0, expected_steps_base / float(args.consistency_rampup))
+                    else:
+                        # 若用户传入 <1，将整个段视作 1 epoch（保守处理）
+                        steps_per_epoch = float(expected_steps_base)
+
+                    epoch_in_stage = float(elapsed_since_stage_update) / steps_per_epoch
+
+                    consistency_weight = compute_consistency_weight(
+                        epoch=epoch_in_stage,
+                        base_weight=args.consistency,
+                        rampup_length=float(args.consistency_rampup),
+                    )
                 else:
-                    rampup_progress = 0.0
-                consistency_weight = compute_consistency_weight(
-                    epoch=rampup_progress,
-                    base_weight=args.consistency,
-                    rampup_length=args.consistency_rampup,
-                )
+                    # 若 consistency_rampup <= 0，禁用 ramp（立即使用 base weight 或维持为 0，视 compute_consistency_weight 实现）
+                    consistency_weight = compute_consistency_weight(
+                        epoch=0.0,
+                        base_weight=args.consistency,
+                        rampup_length=1.0,
+                    )
 
                 # UL unsupervised loss
                 unet_unsup_loss_ul = (ce_loss(unet_logits_ulb_x_s_ul, unet_size_pseudo_label_ul) * 
