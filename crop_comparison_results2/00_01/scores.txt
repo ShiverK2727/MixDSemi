@@ -1,0 +1,836 @@
+Sample: 00_01
+================================================================================
+
+Target Text Softmax Probabilities
+--------------------------------------------------------------------------------
+[000] Peripheral-zone focal, lenticular, markedly hypointense lesion at the left mid-gland with spiculated interface to the capsule and subtle bulge.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[001] Right apical peripheral-zone oval T2-dark focus with indistinct margins and obliteration of the adjacent rectoprostatic angle.
+  Original (x)                : 0.000077
+  Masked Foreground (x_c)     : 0.000607
+  Dilated Mask (x_c2)         : 0.000561
+  Shifted Eroded Foreground (x_err): 0.002482
+[002] Diffuse, wedge-shaped hypointensity in the posterior peripheral zone at the base consistent with inflammatory change.
+  Original (x)                : 0.030910
+  Masked Foreground (x_c)     : 0.020935
+  Dilated Mask (x_c2)         : 0.021029
+  Shifted Eroded Foreground (x_err): 0.020098
+[003] Transition-zone ill-defined, lenticular 'erased charcoal' low-T2 mass displacing the urethra anteriorly.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[004] Encapsulated transition-zone nodule with heterogeneous central T2 hyperintensity and thin low-signal capsule, compatible with glandular BPH.
+  Original (x)                : 0.000033
+  Masked Foreground (x_c)     : 0.000106
+  Dilated Mask (x_c2)         : 0.000111
+  Shifted Eroded Foreground (x_err): 0.000049
+[005] Homogeneously low-T2 stromal BPH nodule in the anterior transition zone with smooth capsule and round morphology.
+  Original (x)                : 0.000800
+  Masked Foreground (x_c)     : 0.001513
+  Dilated Mask (x_c2)         : 0.001407
+  Shifted Eroded Foreground (x_err): 0.001125
+[006] Band-like low-T2 thickening in the anterior fibromuscular stroma causing anterior contour bulge without discrete capsule breach.
+  Original (x)                : 0.003923
+  Masked Foreground (x_c)     : 0.003191
+  Dilated Mask (x_c2)         : 0.003304
+  Shifted Eroded Foreground (x_err): 0.002259
+[007] Long-segment tumor–capsule contact over 18 mm along the left posterolateral mid-gland with capsule irregularity.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000000
+[008] Asymmetric thickening and low-T2 signal of the left neurovascular bundle adjacent to a peripheral-zone lesion.
+  Original (x)                : 0.000450
+  Masked Foreground (x_c)     : 0.005730
+  Dilated Mask (x_c2)         : 0.005814
+  Shifted Eroded Foreground (x_err): 0.005558
+[009] Posterior capsular bulge with blurring of the capsule and intermediate-to-low T2 signal extending into periprostatic fat.
+  Original (x)                : 0.182471
+  Masked Foreground (x_c)     : 0.174138
+  Dilated Mask (x_c2)         : 0.166956
+  Shifted Eroded Foreground (x_err): 0.175777
+[010] Loss of the normal thin high-T2 rim of the peripheral zone with patchy low-signal replacement throughout the base.
+  Original (x)                : 0.000870
+  Masked Foreground (x_c)     : 0.001147
+  Dilated Mask (x_c2)         : 0.001120
+  Shifted Eroded Foreground (x_err): 0.001173
+[011] Focal low-T2 nodule at the right apical posterolateral gland abutting the urethra with teardrop configuration.
+  Original (x)                : 0.001933
+  Masked Foreground (x_c)     : 0.002550
+  Dilated Mask (x_c2)         : 0.002726
+  Shifted Eroded Foreground (x_err): 0.002306
+[012] Multifocal punctate T2 signal voids along the ejaculatory ducts consistent with calcifications.
+  Original (x)                : 0.003340
+  Masked Foreground (x_c)     : 0.001743
+  Dilated Mask (x_c2)         : 0.002444
+  Shifted Eroded Foreground (x_err): 0.001116
+[013] Post-biopsy linear T2-hypointense tracts radiating from the posterior capsule into the peripheral zone.
+  Original (x)                : 0.000047
+  Masked Foreground (x_c)     : 0.000009
+  Dilated Mask (x_c2)         : 0.000009
+  Shifted Eroded Foreground (x_err): 0.000008
+[014] Serpiginous low-T2 foci in the peripheral zone at the mid-gland suggesting intraparenchymal hemorrhage.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[015] Diffuse low-T2 signal throughout the gland with volume loss and indistinct zonal anatomy following radiation therapy.
+  Original (x)                : 0.000029
+  Masked Foreground (x_c)     : 0.000106
+  Dilated Mask (x_c2)         : 0.000121
+  Shifted Eroded Foreground (x_err): 0.000061
+[016] Geographic sharply marginated T2-dark ablation zone in the right gland compatible with post-HIFU change.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[017] Post-cryotherapy confluent low-T2 scarring anteriorly with mild anterior capsular retraction.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[018] Central TURP cavity as a high-T2 fluid-filled defect with a thin low-signal rim and communication with the prostatic urethra.
+  Original (x)                : 0.000054
+  Masked Foreground (x_c)     : 0.000071
+  Dilated Mask (x_c2)         : 0.000080
+  Shifted Eroded Foreground (x_err): 0.000070
+[019] Median lobe hypertrophy protruding into the bladder base showing mixed heterogeneous T2 signal with internal cystic foci.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[020] Symmetric, triangular low-T2 central zone prominence at the base with preserved margins and no mass effect.
+  Original (x)                : 0.000003
+  Masked Foreground (x_c)     : 0.000008
+  Dilated Mask (x_c2)         : 0.000006
+  Shifted Eroded Foreground (x_err): 0.000007
+[021] Left seminal vesicle replaced by low-T2 tissue contiguous with a peripheral-zone mass indicating vesicle invasion.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000015
+  Dilated Mask (x_c2)         : 0.000015
+  Shifted Eroded Foreground (x_err): 0.000014
+[022] Asymmetric loss of the normal high-T2 architecture of the right seminal vesicle with irregular low-signal stranding.
+  Original (x)                : 0.000008
+  Masked Foreground (x_c)     : 0.000023
+  Dilated Mask (x_c2)         : 0.000022
+  Shifted Eroded Foreground (x_err): 0.000022
+[023] Midline Müllerian duct cyst superior to the verumontanum with homogeneous high T2 signal and thin wall.
+  Original (x)                : 0.000097
+  Masked Foreground (x_c)     : 0.000182
+  Dilated Mask (x_c2)         : 0.000193
+  Shifted Eroded Foreground (x_err): 0.000149
+[024] Paramedian ejaculatory-duct cyst near the base with bright T2 fluid signal and mild ductal dilatation.
+  Original (x)                : 0.000405
+  Masked Foreground (x_c)     : 0.000463
+  Dilated Mask (x_c2)         : 0.000530
+  Shifted Eroded Foreground (x_err): 0.000313
+[025] Anterior transition-zone lesion with heterogeneous predominantly low-T2 signal and ill-defined margins compressing the urethra.
+  Original (x)                : 0.000031
+  Masked Foreground (x_c)     : 0.000075
+  Dilated Mask (x_c2)         : 0.000094
+  Shifted Eroded Foreground (x_err): 0.000049
+[026] Peripheral-zone linear wedge of low T2 at the right base with fuzzy edges and no capsular distortion, favoring prostatitis.
+  Original (x)                : 0.000685
+  Masked Foreground (x_c)     : 0.000996
+  Dilated Mask (x_c2)         : 0.000806
+  Shifted Eroded Foreground (x_err): 0.000954
+[027] Large confluent low-T2 mass occupying the left posterior gland with overt capsular bulge and broad contact.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[028] Obliteration of the rectoprostatic angle with low-T2 tissue tracking toward the levator ani on the left.
+  Original (x)                : 0.000019
+  Masked Foreground (x_c)     : 0.000221
+  Dilated Mask (x_c2)         : 0.000227
+  Shifted Eroded Foreground (x_err): 0.000281
+[029] Nodular low-T2 focus at the apex breaching the capsule with subtle spiculation into periprostatic fat.
+  Original (x)                : 0.114237
+  Masked Foreground (x_c)     : 0.099613
+  Dilated Mask (x_c2)         : 0.102020
+  Shifted Eroded Foreground (x_err): 0.064187
+[030] Cystic BPH nodule in the transition zone showing central high-T2 fluid with peripheral thin low-signal capsule.
+  Original (x)                : 0.000253
+  Masked Foreground (x_c)     : 0.000489
+  Dilated Mask (x_c2)         : 0.000494
+  Shifted Eroded Foreground (x_err): 0.000356
+[031] Heterogeneous transition-zone 'organized chaos' with multiple circumscribed nodules and preserved pseudocapsule without dominant low-T2 mass.
+  Original (x)                : 0.000006
+  Masked Foreground (x_c)     : 0.000024
+  Dilated Mask (x_c2)         : 0.000026
+  Shifted Eroded Foreground (x_err): 0.000007
+[032] Diffuse peripheral-zone atrophy with thinning and patchy low T2 replacing the usual bright signal bilaterally.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[033] Anterior horn low-T2 band contiguous with the anterior fibromuscular stroma producing mild anterior contour bossing.
+  Original (x)                : 0.118174
+  Masked Foreground (x_c)     : 0.041649
+  Dilated Mask (x_c2)         : 0.038402
+  Shifted Eroded Foreground (x_err): 0.055613
+[034] Right-sided peripheral-zone lesion encasing but not obliterating the neurovascular bundle with low T2 and irregular margin.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000010
+  Dilated Mask (x_c2)         : 0.000009
+  Shifted Eroded Foreground (x_err): 0.000011
+[035] Focal T2 hyperintense mass in the peripheral zone with thin low-signal rim suggestive of mucinous adenocarcinoma phenotype.
+  Original (x)                : 0.000005
+  Masked Foreground (x_c)     : 0.000024
+  Dilated Mask (x_c2)         : 0.000022
+  Shifted Eroded Foreground (x_err): 0.000012
+[036] Small round low-T2 focus at the left apex with a smooth margin and no capsular contact exceeding 5 mm.
+  Original (x)                : 0.003074
+  Masked Foreground (x_c)     : 0.003841
+  Dilated Mask (x_c2)         : 0.003977
+  Shifted Eroded Foreground (x_err): 0.003635
+[037] Bilateral seminal vesicle dilatation with homogeneous high-T2 fluid and thin septations suggesting obstructive etiology.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000002
+[038] Periurethral low-T2 plaque-like thickening at the mid-gland with subtle urethral narrowing.
+  Original (x)                : 0.003711
+  Masked Foreground (x_c)     : 0.003635
+  Dilated Mask (x_c2)         : 0.004508
+  Shifted Eroded Foreground (x_err): 0.002637
+[039] Right base peripheral-zone low-T2 lesion with satellite nodules and bridging low-signal bands.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000001
+[040] Isolated low-T2 nodule in the central zone at the verumontanum with lobulated border and posterior displacement of the urethra.
+  Original (x)                : 0.000288
+  Masked Foreground (x_c)     : 0.000730
+  Dilated Mask (x_c2)         : 0.000779
+  Shifted Eroded Foreground (x_err): 0.000786
+[041] Irregular low-T2 tissue extending across the midline at the base through the posterior commissure.
+  Original (x)                : 0.000018
+  Masked Foreground (x_c)     : 0.000127
+  Dilated Mask (x_c2)         : 0.000147
+  Shifted Eroded Foreground (x_err): 0.000196
+[042] Left anterior transition-zone mass with homogeneous low T2 and indistinct boundary merging into stromal hyperplasia.
+  Original (x)                : 0.000102
+  Masked Foreground (x_c)     : 0.000663
+  Dilated Mask (x_c2)         : 0.000636
+  Shifted Eroded Foreground (x_err): 0.000559
+[043] Peripheral-zone low-T2 lesion with internal fine linear high-T2 striations suggesting preserved ducts.
+  Original (x)                : 0.000159
+  Masked Foreground (x_c)     : 0.000302
+  Dilated Mask (x_c2)         : 0.000343
+  Shifted Eroded Foreground (x_err): 0.000234
+[044] Encapsulated, ovoid high-T2 cyst in the peripheral zone with a dependent low-signal layer indicating proteinaceous debris.
+  Original (x)                : 0.000022
+  Masked Foreground (x_c)     : 0.000053
+  Dilated Mask (x_c2)         : 0.000049
+  Shifted Eroded Foreground (x_err): 0.000057
+[045] Clustered punctate signal voids casting minor susceptibility artifacts consistent with brachytherapy seeds.
+  Original (x)                : 0.000546
+  Masked Foreground (x_c)     : 0.000446
+  Dilated Mask (x_c2)         : 0.000595
+  Shifted Eroded Foreground (x_err): 0.000221
+[046] Posterolateral capsular irregularity with contour step-off adjacent to a low-T2 plaque-like tumor.
+  Original (x)                : 0.000009
+  Masked Foreground (x_c)     : 0.000007
+  Dilated Mask (x_c2)         : 0.000007
+  Shifted Eroded Foreground (x_err): 0.000006
+[047] Diffuse low-T2 signal in the peripheral zone with asymmetric left greater than right involvement and spared central gland.
+  Original (x)                : 0.000484
+  Masked Foreground (x_c)     : 0.000993
+  Dilated Mask (x_c2)         : 0.000958
+  Shifted Eroded Foreground (x_err): 0.000493
+[048] Transition-zone nodule with central low-T2 core and peripheral mixed signal, partly encapsulated and compressing adjacent nodules.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000013
+  Dilated Mask (x_c2)         : 0.000014
+  Shifted Eroded Foreground (x_err): 0.000006
+[049] Apex lesion with low T2 causing distortion of the urethral sphincter complex and asymmetry of the urethral lumen.
+  Original (x)                : 0.000227
+  Masked Foreground (x_c)     : 0.000764
+  Dilated Mask (x_c2)         : 0.000916
+  Shifted Eroded Foreground (x_err): 0.000736
+[050] Peripheral-zone ribbon-like low-T2 stranding following the course of periprostatic veins without mass effect.
+  Original (x)                : 0.000131
+  Masked Foreground (x_c)     : 0.000253
+  Dilated Mask (x_c2)         : 0.000255
+  Shifted Eroded Foreground (x_err): 0.000130
+[051] Anterior mid-gland low-T2 mass indenting the prostate contour and effacing the anterior fat plane.
+  Original (x)                : 0.000452
+  Masked Foreground (x_c)     : 0.001294
+  Dilated Mask (x_c2)         : 0.001326
+  Shifted Eroded Foreground (x_err): 0.000987
+[052] Posterior base low-T2 lesion with extension into the seminal vesicle base via the ejaculatory duct orifice.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000006
+  Dilated Mask (x_c2)         : 0.000006
+  Shifted Eroded Foreground (x_err): 0.000006
+[053] Right apical lesion with low T2 and a broad-based contact along the capsule exceeding 15 mm without frank breach.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[054] Central gland 'erased charcoal' area crossing the midline with lenticular shape and lack of circumscribed capsule.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[055] Patchy low-T2 fibrosis along the posterior capsule with smooth contour and no associated mass effect.
+  Original (x)                : 0.047577
+  Masked Foreground (x_c)     : 0.013671
+  Dilated Mask (x_c2)         : 0.013033
+  Shifted Eroded Foreground (x_err): 0.015542
+[056] Peripheral-zone low-T2 nodule adjacent to a focus of T2-bright post-biopsy edema.
+  Original (x)                : 0.000409
+  Masked Foreground (x_c)     : 0.000398
+  Dilated Mask (x_c2)         : 0.000343
+  Shifted Eroded Foreground (x_err): 0.000219
+[057] Left posteromedial base lesion causing tethering of Denonvilliers' fascia and posterior contour irregularity.
+  Original (x)                : 0.000126
+  Masked Foreground (x_c)     : 0.000323
+  Dilated Mask (x_c2)         : 0.000294
+  Shifted Eroded Foreground (x_err): 0.000911
+[058] Anterior fibromuscular stromal hypertrophy as a thick uniform low-T2 band with sharp interface to the transition zone.
+  Original (x)                : 0.001516
+  Masked Foreground (x_c)     : 0.000438
+  Dilated Mask (x_c2)         : 0.000422
+  Shifted Eroded Foreground (x_err): 0.000411
+[059] Peripheral-zone confluent low-T2 mass at the base with invasion of the prostatic urethra producing intraluminal irregularity.
+  Original (x)                : 0.000019
+  Masked Foreground (x_c)     : 0.000060
+  Dilated Mask (x_c2)         : 0.000073
+  Shifted Eroded Foreground (x_err): 0.000043
+[060] Apex peripheral-zone lesion with low T2 and angular margins pointing toward the capsule, creating a stellate outline.
+  Original (x)                : 0.004431
+  Masked Foreground (x_c)     : 0.012139
+  Dilated Mask (x_c2)         : 0.012766
+  Shifted Eroded Foreground (x_err): 0.008564
+[061] Nodular low-T2 thickening surrounding the ejaculatory ducts with mild ductal narrowing and symmetric appearance.
+  Original (x)                : 0.025251
+  Masked Foreground (x_c)     : 0.032953
+  Dilated Mask (x_c2)         : 0.040396
+  Shifted Eroded Foreground (x_err): 0.017419
+[062] Left lateral mid-gland low-T2 plaque with curved outer margin paralleling the capsule and fine spicules.
+  Original (x)                : 0.000752
+  Masked Foreground (x_c)     : 0.001398
+  Dilated Mask (x_c2)         : 0.001513
+  Shifted Eroded Foreground (x_err): 0.000713
+[063] Base lesion with low T2 and internal round high-T2 cystic spaces creating a cribriform pattern.
+  Original (x)                : 0.000009
+  Masked Foreground (x_c)     : 0.000027
+  Dilated Mask (x_c2)         : 0.000025
+  Shifted Eroded Foreground (x_err): 0.000026
+[064] Diffuse stromal-predominant BPH pattern with multiple homogeneously low-T2 nodules compressing the peripheral zone.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000005
+  Dilated Mask (x_c2)         : 0.000005
+  Shifted Eroded Foreground (x_err): 0.000003
+[065] Peripheral-zone low-T2 focus with adjacent periprostatic fat stranding and tiny capsular discontinuity.
+  Original (x)                : 0.423659
+  Masked Foreground (x_c)     : 0.431933
+  Dilated Mask (x_c2)         : 0.413302
+  Shifted Eroded Foreground (x_err): 0.229276
+[066] Right transition-zone mass with low T2 and anterolateral capsular bulge displacing the levator ani.
+  Original (x)                : 0.000010
+  Masked Foreground (x_c)     : 0.000106
+  Dilated Mask (x_c2)         : 0.000095
+  Shifted Eroded Foreground (x_err): 0.000067
+[067] Post-radiation contracted gland with effaced zonal anatomy and uniformly low T2, plus telangiectatic high-T2 urethral halo.
+  Original (x)                : 0.000192
+  Masked Foreground (x_c)     : 0.000420
+  Dilated Mask (x_c2)         : 0.000446
+  Shifted Eroded Foreground (x_err): 0.000273
+[068] Peripheral-zone patchy low T2 surrounding a T2-bright abscess cavity with thin low-signal rim and internal septations.
+  Original (x)                : 0.000072
+  Masked Foreground (x_c)     : 0.000280
+  Dilated Mask (x_c2)         : 0.000266
+  Shifted Eroded Foreground (x_err): 0.000171
+[069] Midline utricle cyst with high T2 and eccentric low-signal mural nodule along its posterior wall.
+  Original (x)                : 0.000038
+  Masked Foreground (x_c)     : 0.000043
+  Dilated Mask (x_c2)         : 0.000047
+  Shifted Eroded Foreground (x_err): 0.000036
+[070] Apical posterolateral low-T2 lesion with truncation of the normal hyperintense peripheral-band sign.
+  Original (x)                : 0.000017
+  Masked Foreground (x_c)     : 0.000054
+  Dilated Mask (x_c2)         : 0.000059
+  Shifted Eroded Foreground (x_err): 0.000140
+[071] Anterior transition-zone low-T2 nodule invading the anterior fibromuscular stroma with indistinct boundary.
+  Original (x)                : 0.000026
+  Masked Foreground (x_c)     : 0.000086
+  Dilated Mask (x_c2)         : 0.000077
+  Shifted Eroded Foreground (x_err): 0.000069
+[072] Peripheral-zone low-T2 lesion showing crescentic subcapsular location with overlying capsule puckering.
+  Original (x)                : 0.000004
+  Masked Foreground (x_c)     : 0.000007
+  Dilated Mask (x_c2)         : 0.000006
+  Shifted Eroded Foreground (x_err): 0.000006
+[073] Right base low-T2 mass crossing the midline with bridging strands through the posterior commissure.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000003
+[074] Peripheral-zone low-T2 focus with internal tiny T2-bright acini creating a salted-and-pepper appearance.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[075] Capsular bulge at the left mid-gland with external convexity and dark capsular interruption adjacent to a low-T2 mass.
+  Original (x)                : 0.000035
+  Masked Foreground (x_c)     : 0.000114
+  Dilated Mask (x_c2)         : 0.000110
+  Shifted Eroded Foreground (x_err): 0.000072
+[076] Transition-zone lesion with trail-sign extension toward the urethra and asymmetric indentation of the lumen.
+  Original (x)                : 0.000013
+  Masked Foreground (x_c)     : 0.000032
+  Dilated Mask (x_c2)         : 0.000038
+  Shifted Eroded Foreground (x_err): 0.000040
+[077] Peripheral-zone diffuse low-T2 band paralleling the capsule with smooth margins and no focal nodularity.
+  Original (x)                : 0.000197
+  Masked Foreground (x_c)     : 0.000402
+  Dilated Mask (x_c2)         : 0.000320
+  Shifted Eroded Foreground (x_err): 0.000321
+[078] Irregular, multilobulated low-T2 mass at the base with contiguous low-signal replacing the normal seminal vesicle folds.
+  Original (x)                : 0.000004
+  Masked Foreground (x_c)     : 0.000021
+  Dilated Mask (x_c2)         : 0.000025
+  Shifted Eroded Foreground (x_err): 0.000019
+[079] Anterior apex low-T2 lesion with subtle tenting of the anterior capsule and minimal mass effect on the puboprostatic ligaments.
+  Original (x)                : 0.027549
+  Masked Foreground (x_c)     : 0.136313
+  Dilated Mask (x_c2)         : 0.153261
+  Shifted Eroded Foreground (x_err): 0.380899
+
+Style Text Softmax Probabilities
+--------------------------------------------------------------------------------
+[000] High signal-to-noise ratio T2-weighted image with uniform fat suppression and minimal motion artifacts, showing excellent delineation of the prostate capsule.
+  Original (x)                : 0.000975
+  Masked Foreground (x_c)     : 0.001306
+  Dilated Mask (x_c2)         : 0.001444
+  Shifted Eroded Foreground (x_err): 0.000798
+[001] T2-weighted axial acquisition with mild Gibbs ringing along the capsule margin, moderate SNR, and preserved zonal contrast.
+  Original (x)                : 0.047236
+  Masked Foreground (x_c)     : 0.050308
+  Dilated Mask (x_c2)         : 0.043930
+  Shifted Eroded Foreground (x_err): 0.028694
+[002] T2-weighted image with subtle susceptibility artifacts from rectal gas, slightly reducing posterior peripheral zone visibility.
+  Original (x)                : 0.000062
+  Masked Foreground (x_c)     : 0.000079
+  Dilated Mask (x_c2)         : 0.000079
+  Shifted Eroded Foreground (x_err): 0.000069
+[003] T2-weighted image demonstrating mild phase-encoding ghosting due to patient motion, otherwise good contrast between zones.
+  Original (x)                : 0.000031
+  Masked Foreground (x_c)     : 0.000015
+  Dilated Mask (x_c2)         : 0.000013
+  Shifted Eroded Foreground (x_err): 0.000011
+[004] Low signal-to-noise T2-weighted image with granular noise texture and reduced delineation of transition zone nodularity.
+  Original (x)                : 0.000032
+  Masked Foreground (x_c)     : 0.000044
+  Dilated Mask (x_c2)         : 0.000042
+  Shifted Eroded Foreground (x_err): 0.000020
+[005] High-resolution T2-weighted image with thin slices and high SNR, clearly distinguishing the hypointense capsule and hyperintense peripheral zone.
+  Original (x)                : 0.000013
+  Masked Foreground (x_c)     : 0.000015
+  Dilated Mask (x_c2)         : 0.000015
+  Shifted Eroded Foreground (x_err): 0.000009
+[006] Moderate SNR image with slight blurring secondary to incomplete fat suppression, peripheral zone contrast partially reduced.
+  Original (x)                : 0.036111
+  Masked Foreground (x_c)     : 0.040472
+  Dilated Mask (x_c2)         : 0.037826
+  Shifted Eroded Foreground (x_err): 0.021152
+[007] Axial T2-weighted sequence with mild wrap-around artifact along the anterior rectal wall, gland margins still discernible.
+  Original (x)                : 0.000010
+  Masked Foreground (x_c)     : 0.000040
+  Dilated Mask (x_c2)         : 0.000036
+  Shifted Eroded Foreground (x_err): 0.000044
+[008] T2-weighted image acquired with turbo spin echo technique, high SNR, minor blurring from long echo train length.
+  Original (x)                : 0.000039
+  Masked Foreground (x_c)     : 0.000026
+  Dilated Mask (x_c2)         : 0.000024
+  Shifted Eroded Foreground (x_err): 0.000017
+[009] Low SNR image with coarse background noise and faint ghosting in phase-encoding direction, diminished capsular definition.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[010] High-contrast T2-weighted image with excellent spatial resolution and uniform signal across prostate parenchyma.
+  Original (x)                : 0.000859
+  Masked Foreground (x_c)     : 0.001276
+  Dilated Mask (x_c2)         : 0.001500
+  Shifted Eroded Foreground (x_err): 0.000651
+[011] Image demonstrates mild chemical shift artifact along the prostate–periprostatic fat interface, minimal diagnostic interference.
+  Original (x)                : 0.012977
+  Masked Foreground (x_c)     : 0.017663
+  Dilated Mask (x_c2)         : 0.018608
+  Shifted Eroded Foreground (x_err): 0.009271
+[012] T2-weighted image with slightly uneven B1 field causing regional signal inhomogeneity in the peripheral zone.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000001
+[013] T2-weighted fast spin-echo image with moderate motion artifact from respiration, peripheral rim blurred.
+  Original (x)                : 0.000006
+  Masked Foreground (x_c)     : 0.000006
+  Dilated Mask (x_c2)         : 0.000006
+  Shifted Eroded Foreground (x_err): 0.000007
+[014] Image characterized by excellent SNR, sharp capsular boundary, and minimal motion-induced distortion.
+  Original (x)                : 0.000036
+  Masked Foreground (x_c)     : 0.000047
+  Dilated Mask (x_c2)         : 0.000046
+  Shifted Eroded Foreground (x_err): 0.000068
+[015] T2-weighted image with low contrast-to-noise ratio between peripheral and transition zones due to insufficient TE optimization.
+  Original (x)                : 0.000029
+  Masked Foreground (x_c)     : 0.000020
+  Dilated Mask (x_c2)         : 0.000017
+  Shifted Eroded Foreground (x_err): 0.000008
+[016] Axial T2-weighted image demonstrating magnetic susceptibility distortion near air-tissue interface posteriorly.
+  Original (x)                : 0.000050
+  Masked Foreground (x_c)     : 0.000210
+  Dilated Mask (x_c2)         : 0.000191
+  Shifted Eroded Foreground (x_err): 0.000243
+[017] High SNR image with strong peripheral-to-transition zone contrast, minor Gibbs ringing along gland boundaries.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000011
+  Dilated Mask (x_c2)         : 0.000011
+  Shifted Eroded Foreground (x_err): 0.000009
+[018] T2-weighted image with motion-induced phase ghosts anterior to the prostate, mild reduction in clarity.
+  Original (x)                : 0.010065
+  Masked Foreground (x_c)     : 0.012133
+  Dilated Mask (x_c2)         : 0.012474
+  Shifted Eroded Foreground (x_err): 0.007065
+[019] Moderate noise image with adequate spatial resolution and visible partial volume effects at the apex.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[020] High-quality T2-weighted image with uniform signal, sharp delineation of capsule, and excellent zonal contrast.
+  Original (x)                : 0.014663
+  Masked Foreground (x_c)     : 0.010447
+  Dilated Mask (x_c2)         : 0.010373
+  Shifted Eroded Foreground (x_err): 0.006350
+[021] T2-weighted image showing nonuniform coil sensitivity, causing mild anterior signal drop-off.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000014
+  Dilated Mask (x_c2)         : 0.000014
+  Shifted Eroded Foreground (x_err): 0.000016
+[022] Low SNR image with salt-and-pepper noise texture, loss of fine detail in peripheral gland structures.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[023] High spatial resolution T2-weighted acquisition with slight aliasing artifact along anterior pelvic wall.
+  Original (x)                : 0.000352
+  Masked Foreground (x_c)     : 0.000912
+  Dilated Mask (x_c2)         : 0.000974
+  Shifted Eroded Foreground (x_err): 0.000546
+[024] T2-weighted image with visible pulsation artifact from iliac vessels encroaching on peripheral zone signal.
+  Original (x)                : 0.000014
+  Masked Foreground (x_c)     : 0.000030
+  Dilated Mask (x_c2)         : 0.000033
+  Shifted Eroded Foreground (x_err): 0.000014
+[025] Moderate-resolution image with adequate SNR but partial volume averaging at prostate–seminal vesicle junction.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000000
+[026] T2-weighted image showing excellent gray-scale dynamic range with subtle hypointense fibromuscular stroma differentiation.
+  Original (x)                : 0.126842
+  Masked Foreground (x_c)     : 0.083859
+  Dilated Mask (x_c2)         : 0.088051
+  Shifted Eroded Foreground (x_err): 0.055324
+[027] Image acquired with endorectal coil providing superior SNR and detailed capsular definition but minor field inhomogeneity.
+  Original (x)                : 0.000051
+  Masked Foreground (x_c)     : 0.000100
+  Dilated Mask (x_c2)         : 0.000107
+  Shifted Eroded Foreground (x_err): 0.000060
+[028] Low-SNR image with distinct granular noise pattern and poor zonal differentiation between central and peripheral regions.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[029] High-contrast image with slight distortion due to magnetic field nonuniformity near posterior capsule.
+  Original (x)                : 0.000062
+  Masked Foreground (x_c)     : 0.000014
+  Dilated Mask (x_c2)         : 0.000012
+  Shifted Eroded Foreground (x_err): 0.000011
+[030] Moderate SNR image showing ghosting artifact secondary to rectal peristalsis, gland margins partially obscured.
+  Original (x)                : 0.000035
+  Masked Foreground (x_c)     : 0.000112
+  Dilated Mask (x_c2)         : 0.000118
+  Shifted Eroded Foreground (x_err): 0.000116
+[031] T2-weighted fast spin echo image with high SNR, slight blurring from long echo spacing, and smooth signal transition.
+  Original (x)                : 0.000011
+  Masked Foreground (x_c)     : 0.000008
+  Dilated Mask (x_c2)         : 0.000008
+  Shifted Eroded Foreground (x_err): 0.000005
+[032] Low SNR acquisition exhibiting random noise spikes and reduced visibility of anterior fibromuscular stroma.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000013
+  Dilated Mask (x_c2)         : 0.000013
+  Shifted Eroded Foreground (x_err): 0.000024
+[033] Image with mild B0 inhomogeneity across the field-of-view, creating anterior-to-posterior signal gradient.
+  Original (x)                : 0.000003
+  Masked Foreground (x_c)     : 0.000005
+  Dilated Mask (x_c2)         : 0.000004
+  Shifted Eroded Foreground (x_err): 0.000004
+[034] High-quality T2-weighted image with minimal susceptibility distortion and excellent zonal demarcation.
+  Original (x)                : 0.000385
+  Masked Foreground (x_c)     : 0.000557
+  Dilated Mask (x_c2)         : 0.000581
+  Shifted Eroded Foreground (x_err): 0.000308
+[035] Moderate-resolution image with clear edge enhancement from mild Gibbs phenomenon around the prostate capsule.
+  Original (x)                : 0.005386
+  Masked Foreground (x_c)     : 0.006400
+  Dilated Mask (x_c2)         : 0.006798
+  Shifted Eroded Foreground (x_err): 0.003383
+[036] T2-weighted image displaying uniform signal distribution, minimal phase wrap, and consistent brightness across zones.
+  Original (x)                : 0.002264
+  Masked Foreground (x_c)     : 0.001671
+  Dilated Mask (x_c2)         : 0.001578
+  Shifted Eroded Foreground (x_err): 0.001227
+[037] Image affected by minor truncation artifact at capsule border, otherwise high SNR and strong peripheral signal.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[038] Low SNR T2-weighted scan with pronounced mottled noise and limited zonal contrast discrimination.
+  Original (x)                : 0.000094
+  Masked Foreground (x_c)     : 0.000189
+  Dilated Mask (x_c2)         : 0.000186
+  Shifted Eroded Foreground (x_err): 0.000112
+[039] High SNR image obtained using multi-channel surface coils, displaying superior peripheral zone clarity.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[040] T2-weighted image with mild aliasing artifact from undersampling, gland margins partially wrapped into FOV.
+  Original (x)                : 0.000017
+  Masked Foreground (x_c)     : 0.000032
+  Dilated Mask (x_c2)         : 0.000031
+  Shifted Eroded Foreground (x_err): 0.000014
+[041] High-contrast image with sharp capsular delineation and strong peripheral zone hyperintensity.
+  Original (x)                : 0.000021
+  Masked Foreground (x_c)     : 0.000043
+  Dilated Mask (x_c2)         : 0.000042
+  Shifted Eroded Foreground (x_err): 0.000036
+[042] Moderate SNR image affected by slight motion blur, peripheral capsule appears softened.
+  Original (x)                : 0.027924
+  Masked Foreground (x_c)     : 0.014208
+  Dilated Mask (x_c2)         : 0.012554
+  Shifted Eroded Foreground (x_err): 0.016157
+[043] Low-SNR image with poor gray-scale contrast, capsule barely perceptible against background signal.
+  Original (x)                : 0.000004
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000003
+[044] High SNR image demonstrating excellent anatomic resolution, minimal geometric distortion, and smooth texture.
+  Original (x)                : 0.003048
+  Masked Foreground (x_c)     : 0.002301
+  Dilated Mask (x_c2)         : 0.002843
+  Shifted Eroded Foreground (x_err): 0.002754
+[045] T2-weighted image with faint chemical shift banding between periprostatic fat and gland surface.
+  Original (x)                : 0.007795
+  Masked Foreground (x_c)     : 0.006783
+  Dilated Mask (x_c2)         : 0.006673
+  Shifted Eroded Foreground (x_err): 0.004117
+[046] Moderate SNR image with consistent intensity profile but mild banding artifact anteriorly.
+  Original (x)                : 0.000018
+  Masked Foreground (x_c)     : 0.000007
+  Dilated Mask (x_c2)         : 0.000006
+  Shifted Eroded Foreground (x_err): 0.000011
+[047] High SNR fast spin echo image with excellent zonal differentiation and visible internal ductal structures.
+  Original (x)                : 0.000804
+  Masked Foreground (x_c)     : 0.006134
+  Dilated Mask (x_c2)         : 0.007993
+  Shifted Eroded Foreground (x_err): 0.003300
+[048] Low SNR image exhibiting random speckle noise and reduced signal uniformity across axial slices.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[049] T2-weighted image with ghosting from cardiac motion, mild anterior streaking observed.
+  Original (x)                : 0.000200
+  Masked Foreground (x_c)     : 0.000147
+  Dilated Mask (x_c2)         : 0.000128
+  Shifted Eroded Foreground (x_err): 0.000271
+[050] High-quality image with sharp delineation of urethral lumen and minimal partial volume averaging.
+  Original (x)                : 0.000018
+  Masked Foreground (x_c)     : 0.000031
+  Dilated Mask (x_c2)         : 0.000032
+  Shifted Eroded Foreground (x_err): 0.000028
+[051] Moderate SNR image with visible ringing artifact near high-contrast interfaces, otherwise preserved definition.
+  Original (x)                : 0.000012
+  Masked Foreground (x_c)     : 0.000005
+  Dilated Mask (x_c2)         : 0.000005
+  Shifted Eroded Foreground (x_err): 0.000003
+[052] Low-contrast T2-weighted image due to suboptimal echo time, zones not clearly differentiated.
+  Original (x)                : 0.000054
+  Masked Foreground (x_c)     : 0.000098
+  Dilated Mask (x_c2)         : 0.000093
+  Shifted Eroded Foreground (x_err): 0.000052
+[053] T2-weighted image with excellent SNR, clear capsule definition, and minimal noise floor elevation.
+  Original (x)                : 0.664332
+  Masked Foreground (x_c)     : 0.709648
+  Dilated Mask (x_c2)         : 0.713399
+  Shifted Eroded Foreground (x_err): 0.807719
+[054] Image showing local field inhomogeneity near rectal wall, causing subtle posterior signal drop.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000027
+  Dilated Mask (x_c2)         : 0.000026
+  Shifted Eroded Foreground (x_err): 0.000022
+[055] High-resolution acquisition with faint truncation lines near lateral margins of the capsule.
+  Original (x)                : 0.000005
+  Masked Foreground (x_c)     : 0.000005
+  Dilated Mask (x_c2)         : 0.000006
+  Shifted Eroded Foreground (x_err): 0.000003
+[056] T2-weighted image with mild distortion from eddy currents, signal integrity largely preserved.
+  Original (x)                : 0.003036
+  Masked Foreground (x_c)     : 0.004455
+  Dilated Mask (x_c2)         : 0.004567
+  Shifted Eroded Foreground (x_err): 0.002229
+[057] Low SNR image with coarse noise pattern and reduced peripheral-to-transition zone contrast.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[058] High-quality image with smooth gradient intensity transitions and consistent fat suppression.
+  Original (x)                : 0.001207
+  Masked Foreground (x_c)     : 0.001148
+  Dilated Mask (x_c2)         : 0.001141
+  Shifted Eroded Foreground (x_err): 0.000510
+[059] T2-weighted scan showing slight motion ghosting from bowel peristalsis, gland boundary partially blurred.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000008
+  Dilated Mask (x_c2)         : 0.000008
+  Shifted Eroded Foreground (x_err): 0.000007
+[060] Moderate SNR image with asymmetric signal fall-off due to coil sensitivity variation.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[061] High-resolution image demonstrating uniform T2 contrast and clear internal nodular definition.
+  Original (x)                : 0.000066
+  Masked Foreground (x_c)     : 0.000238
+  Dilated Mask (x_c2)         : 0.000227
+  Shifted Eroded Foreground (x_err): 0.000133
+[062] Low SNR acquisition with mottled appearance and visible phase-encoding streak artifacts.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[063] T2-weighted image showing faint Gibbs ringing along rectoprostatic interface, high overall SNR.
+  Original (x)                : 0.000585
+  Masked Foreground (x_c)     : 0.001212
+  Dilated Mask (x_c2)         : 0.001372
+  Shifted Eroded Foreground (x_err): 0.001920
+[064] Moderate SNR image with clear gray-scale separation and minimal geometric distortion.
+  Original (x)                : 0.000011
+  Masked Foreground (x_c)     : 0.000007
+  Dilated Mask (x_c2)         : 0.000007
+  Shifted Eroded Foreground (x_err): 0.000008
+[065] High-quality image with excellent contrast-to-noise ratio, capsule clearly hypointense.
+  Original (x)                : 0.005779
+  Masked Foreground (x_c)     : 0.001477
+  Dilated Mask (x_c2)         : 0.001411
+  Shifted Eroded Foreground (x_err): 0.000965
+[066] Low-contrast image with diffuse noise distribution and indistinct zonal boundary.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[067] High SNR image demonstrating distinct delineation of anterior fibromuscular stroma and capsule.
+  Original (x)                : 0.005885
+  Masked Foreground (x_c)     : 0.008955
+  Dilated Mask (x_c2)         : 0.008782
+  Shifted Eroded Foreground (x_err): 0.009856
+[068] T2-weighted image with mild aliasing artifact across the superior gland region.
+  Original (x)                : 0.000703
+  Masked Foreground (x_c)     : 0.001414
+  Dilated Mask (x_c2)         : 0.001340
+  Shifted Eroded Foreground (x_err): 0.000946
+[069] Moderate SNR scan showing uniform intensity but slight peripheral blurring due to motion.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[070] Low SNR image with high-frequency noise, causing grainy peripheral zone texture.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[071] T2-weighted image with subtle motion-induced ghosting posteriorly and mild signal fall-off.
+  Original (x)                : 0.010925
+  Masked Foreground (x_c)     : 0.006635
+  Dilated Mask (x_c2)         : 0.005509
+  Shifted Eroded Foreground (x_err): 0.007419
+[072] High-contrast acquisition with clear hyperintense peripheral zone and hypointense capsule line.
+  Original (x)                : 0.000269
+  Masked Foreground (x_c)     : 0.000145
+  Dilated Mask (x_c2)         : 0.000128
+  Shifted Eroded Foreground (x_err): 0.000054
+[073] Low SNR image with evident coil dropout artifact anteriorly, peripheral zone barely visible.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[074] Moderate SNR T2-weighted scan with uniform gray-scale distribution and minor phase shift artifact.
+  Original (x)                : 0.000602
+  Masked Foreground (x_c)     : 0.000845
+  Dilated Mask (x_c2)         : 0.000850
+  Shifted Eroded Foreground (x_err): 0.000514
+[075] High-quality image with sharp structural delineation, minimal distortion, and optimal echo parameters.
+  Original (x)                : 0.000035
+  Masked Foreground (x_c)     : 0.000049
+  Dilated Mask (x_c2)         : 0.000055
+  Shifted Eroded Foreground (x_err): 0.000051
+[076] T2-weighted fast spin-echo image with moderate blurring, capsule margins slightly indistinct.
+  Original (x)                : 0.000014
+  Masked Foreground (x_c)     : 0.000021
+  Dilated Mask (x_c2)         : 0.000018
+  Shifted Eroded Foreground (x_err): 0.000012
+[077] Low SNR image with visible random speckle noise and decreased peripheral detail.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[078] High-resolution T2-weighted scan showing strong peripheral brightness and intact capsular hypointensity.
+  Original (x)                : 0.001107
+  Masked Foreground (x_c)     : 0.001148
+  Dilated Mask (x_c2)         : 0.001063
+  Shifted Eroded Foreground (x_err): 0.000968
+[079] Moderate SNR image with slight ghosting due to patient motion, gland still clearly visible.
+  Original (x)                : 0.006795
+  Masked Foreground (x_c)     : 0.004764
+  Dilated Mask (x_c2)         : 0.004573
+  Shifted Eroded Foreground (x_err): 0.004278
+
+Subset Mean Scores (cosine * scale)
+--------------------------------------------------------------------------------
+Subset 1
+  Original (x)                : 35.656144
+  Masked Foreground (x_c)     : 35.938811
+  Dilated Mask (x_c2)         : 35.861541
+  Shifted Eroded Foreground (x_err): 35.060816
+Subset 2
+  Original (x)                : 36.191078
+  Masked Foreground (x_c)     : 36.376327
+  Dilated Mask (x_c2)         : 36.301469
+  Shifted Eroded Foreground (x_err): 35.452645
+Subset 3
+  Original (x)                : 35.400453
+  Masked Foreground (x_c)     : 36.037365
+  Dilated Mask (x_c2)         : 35.950244
+  Shifted Eroded Foreground (x_err): 35.056772
+Subset 4
+  Original (x)                : 36.556596
+  Masked Foreground (x_c)     : 36.957981
+  Dilated Mask (x_c2)         : 36.890731
+  Shifted Eroded Foreground (x_err): 35.974132
+Subset 5
+  Original (x)                : 36.046169
+  Masked Foreground (x_c)     : 36.515413
+  Dilated Mask (x_c2)         : 36.472170
+  Shifted Eroded Foreground (x_err): 35.648864

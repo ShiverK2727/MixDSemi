@@ -28,7 +28,6 @@ from utils.training import cycle
 parser = argparse.ArgumentParser()
 
 # ==================== Basic Configuration ====================
-# (与原文件相同)
 parser.add_argument('--dataset', type=str, default='prostate',
                     choices=['fundus', 'prostate', 'MNMS', 'BUSI'],
                     help='Dataset to use for training')
@@ -46,14 +45,12 @@ parser.add_argument("--deterministic", type=int, default=1,
                     help="Whether to use deterministic training")
 
 # ==================== Training Schedule ====================
-# (与原文件相同)
 parser.add_argument("--max_iterations", type=int, default=None,
                     help="Maximum iterations to train (auto-set per dataset if None)")
 parser.add_argument('--amp', type=int, default=1,
                     help='Use mixed precision training (1: enabled, 0: disabled)')
 
 # ==================== Data Configuration ====================
-# (与原文件相同)
 parser.add_argument("--label_bs", type=int, default=None,
                     help="Labeled batch size per GPU (auto-set based on lb_num if None)")
 parser.add_argument("--unlabel_bs", type=int, default=None,
@@ -68,7 +65,6 @@ parser.add_argument('--lb_ratio', type=float, default=0,
                     help='Labeled data ratio of total dataset (overrides lb_num if > 0)')
 
 # ==================== Preprocessing ====================
-# (与原文件相同)
 parser.add_argument('--preprocess_dir', type=str, default=None,
                     help='Override preprocessing directory for score tensors')
 parser.add_argument('--llm_model', type=str, default='gemini',
@@ -82,12 +78,10 @@ parser.add_argument('--describe_nums', type=int, default=40,
 clip_loss_group = parser.add_argument_group('CLIP Loss Configuration')
 clip_loss_group.add_argument('--clip_loss_mv_anchor_weight', type=float, default=1.0,
                             help='Weight for (loss_mv + loss_anchor) term')
-# (移除 ortho_weight)
 clip_loss_group.add_argument('--clip_loss_sw_reg_weight', type=float, default=1.0,
                             help='Weight for loss_sw_reg term')
 
 # ==================== BiomedCLIP with Visual Prompts (简化) ====================
-# (与原文件相同)
 parser.add_argument('--biomedclip_path', type=str, default='/root/models/BiomedCLIP',
                     help='Root directory containing BiomedCLIP weights and config JSON')
 parser.add_argument('--biomedclip_num_prompts', type=int, default=4,
@@ -106,7 +100,6 @@ parser.add_argument('--biomedclip_disable_scale', action='store_true',
                     help='Disable learnable prompt scaling (fix to 1.0)')
 
 # ==================== Text Sampler ====================
-# (与原文件相同)
 parser.add_argument('--text_root', type=str, default='/app/MixDSemi/SynFoCLIP/code/text',
                     help='Directory containing dataset text description JSON files')
 parser.add_argument('--text_num_subsets', type=int, default=4,

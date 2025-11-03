@@ -1,0 +1,836 @@
+Sample: 00_01
+================================================================================
+
+Target Text Softmax Probabilities
+--------------------------------------------------------------------------------
+[000] Uniformly high T2 signal intensity throughout the peripheral zone.
+  Original (x)                : 0.000082
+  Masked Foreground (x_c)     : 0.000095
+  Dilated Mask (x_c2)         : 0.000090
+  Shifted Eroded Foreground (x_err): 0.000074
+[001] Diffuse, mild T2 hypointensity in the peripheral zone, consistent with prostatitis.
+  Original (x)                : 0.005576
+  Masked Foreground (x_c)     : 0.008603
+  Dilated Mask (x_c2)         : 0.008199
+  Shifted Eroded Foreground (x_err): 0.011445
+[002] Linear, wedge-shaped T2 hypointensity in the peripheral zone, likely post-inflammatory scar.
+  Original (x)                : 0.010225
+  Masked Foreground (x_c)     : 0.026518
+  Dilated Mask (x_c2)         : 0.024354
+  Shifted Eroded Foreground (x_err): 0.024744
+[003] Geographic, ill-defined T2 low signal in the posterior peripheral zone.
+  Original (x)                : 0.007840
+  Masked Foreground (x_c)     : 0.019654
+  Dilated Mask (x_c2)         : 0.015375
+  Shifted Eroded Foreground (x_err): 0.021844
+[004] Bilateral, symmetric T2 hypointensity in the peripheral zone.
+  Original (x)                : 0.000089
+  Masked Foreground (x_c)     : 0.000356
+  Dilated Mask (x_c2)         : 0.000294
+  Shifted Eroded Foreground (x_err): 0.000345
+[005] Peripheral zone demonstrating normal 'charcoal' high T2 signal.
+  Original (x)                : 0.000305
+  Masked Foreground (x_c)     : 0.000977
+  Dilated Mask (x_c2)         : 0.000933
+  Shifted Eroded Foreground (x_err): 0.001445
+[006] Focal, T2 hyperintense signal in the peripheral zone, consistent with acute hemorrhage.
+  Original (x)                : 0.000078
+  Masked Foreground (x_c)     : 0.000124
+  Dilated Mask (x_c2)         : 0.000114
+  Shifted Eroded Foreground (x_err): 0.000086
+[007] Markedly T2 hypointense signal in the peripheral zone, consistent with chronic hemorrhage/hemosiderin.
+  Original (x)                : 0.000910
+  Masked Foreground (x_c)     : 0.001703
+  Dilated Mask (x_c2)         : 0.001721
+  Shifted Eroded Foreground (x_err): 0.001061
+[008] Peripheral zone compressed and thinned by an enlarged transition zone.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[009] Punctate T2 hypointense foci within the peripheral zone.
+  Original (x)                : 0.015845
+  Masked Foreground (x_c)     : 0.035295
+  Dilated Mask (x_c2)         : 0.032579
+  Shifted Eroded Foreground (x_err): 0.031263
+[010] Focal, circumscribed, homogeneous, moderately hypointense lesion in the peripheral zone.
+  Original (x)                : 0.001045
+  Masked Foreground (x_c)     : 0.002887
+  Dilated Mask (x_c2)         : 0.002675
+  Shifted Eroded Foreground (x_err): 0.002169
+[011] Non-circumscribed, ill-defined, T2 hypointense lesion in the peripheral zone.
+  Original (x)                : 0.000375
+  Masked Foreground (x_c)     : 0.001259
+  Dilated Mask (x_c2)         : 0.001118
+  Shifted Eroded Foreground (x_err): 0.000858
+[012] Lenticular, moderately hypointense mass in the peripheral zone.
+  Original (x)                : 0.000023
+  Masked Foreground (x_c)     : 0.000025
+  Dilated Mask (x_c2)         : 0.000025
+  Shifted Eroded Foreground (x_err): 0.000027
+[013] Peripheral zone lesion demonstrating 'erased charcoal sign' or smudged appearance.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[014] Markedly T2 hypointense, focal nodule in the peripheral zone at the apex.
+  Original (x)                : 0.000202
+  Masked Foreground (x_c)     : 0.000886
+  Dilated Mask (x_c2)         : 0.000906
+  Shifted Eroded Foreground (x_err): 0.000397
+[015] Spiculated, T2 hypointense mass in the peripheral zone with indistinct margins.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000001
+[016] Irregularly shaped, homogeneous low T2 signal lesion in the peripheral zone.
+  Original (x)                : 0.001267
+  Masked Foreground (x_c)     : 0.004825
+  Dilated Mask (x_c2)         : 0.004510
+  Shifted Eroded Foreground (x_err): 0.003330
+[017] Lobulated, T2 hypointense mass at the peripheral zone-central zone interface.
+  Original (x)                : 0.000018
+  Masked Foreground (x_c)     : 0.000128
+  Dilated Mask (x_c2)         : 0.000118
+  Shifted Eroded Foreground (x_err): 0.000068
+[018] Peripheral zone lesion with T2 signal isointense to muscle.
+  Original (x)                : 0.000111
+  Masked Foreground (x_c)     : 0.000848
+  Dilated Mask (x_c2)         : 0.000838
+  Shifted Eroded Foreground (x_err): 0.000553
+[019] Broad-based T2 hypointense lesion abutting the prostatic capsule.
+  Original (x)                : 0.000085
+  Masked Foreground (x_c)     : 0.000224
+  Dilated Mask (x_c2)         : 0.000234
+  Shifted Eroded Foreground (x_err): 0.000143
+[020] Peripheral zone lesion demonstrating clear breach of the prostatic capsule.
+  Original (x)                : 0.000056
+  Masked Foreground (x_c)     : 0.000103
+  Dilated Mask (x_c2)         : 0.000092
+  Shifted Eroded Foreground (x_err): 0.000095
+[021] T2 hypointense mass in the peripheral zone with extracapsular extension.
+  Original (x)                : 0.000663
+  Masked Foreground (x_c)     : 0.003444
+  Dilated Mask (x_c2)         : 0.003189
+  Shifted Eroded Foreground (x_err): 0.001545
+[022] Peripheral zone lesion with invasion of the adjacent neurovascular bundle.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000005
+  Dilated Mask (x_c2)         : 0.000005
+  Shifted Eroded Foreground (x_err): 0.000006
+[023] T2 hypointense tumor signal obliterating the rectoprostatic angle.
+  Original (x)                : 0.000255
+  Masked Foreground (x_c)     : 0.002718
+  Dilated Mask (x_c2)         : 0.002783
+  Shifted Eroded Foreground (x_err): 0.005200
+[024] Peripheral zone lesion at the base with direct seminal vesicle invasion.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[025] Asymmetric bulging of the prostatic capsule overlying a T2 hypointense peripheral zone lesion.
+  Original (x)                : 0.000313
+  Masked Foreground (x_c)     : 0.001447
+  Dilated Mask (x_c2)         : 0.001405
+  Shifted Eroded Foreground (x_err): 0.001424
+[026] T2 hypointense lesion with tumor-capsule interface greater than 1.5 cm.
+  Original (x)                : 0.005893
+  Masked Foreground (x_c)     : 0.015844
+  Dilated Mask (x_c2)         : 0.015095
+  Shifted Eroded Foreground (x_err): 0.010668
+[027] Ill-defined T2 hypointense signal in the peripheral zone, obscured by hemorrhage.
+  Original (x)                : 0.000021
+  Masked Foreground (x_c)     : 0.000043
+  Dilated Mask (x_c2)         : 0.000041
+  Shifted Eroded Foreground (x_err): 0.000027
+[028] Small, round, T2 hypointense focus in the peripheral zone, less than 1.5 cm.
+  Original (x)                : 0.001490
+  Masked Foreground (x_c)     : 0.004044
+  Dilated Mask (x_c2)         : 0.003636
+  Shifted Eroded Foreground (x_err): 0.002265
+[029] Large, invasive, T2 hypointense mass replacing the entire peripheral zone.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000009
+  Dilated Mask (x_c2)         : 0.000010
+  Shifted Eroded Foreground (x_err): 0.000005
+[030] Diffuse T2 hypointensity in the peripheral zone, suspicious for diffuse infiltrative tumor.
+  Original (x)                : 0.003005
+  Masked Foreground (x_c)     : 0.017512
+  Dilated Mask (x_c2)         : 0.017793
+  Shifted Eroded Foreground (x_err): 0.008894
+[031] Enlarged transition zone with heterogeneous signal intensity.
+  Original (x)                : 0.000015
+  Masked Foreground (x_c)     : 0.000022
+  Dilated Mask (x_c2)         : 0.000026
+  Shifted Eroded Foreground (x_err): 0.000013
+[032] Transition zone demonstrating 'organized chaos' appearance of mixed signal nodules.
+  Original (x)                : 0.000013
+  Masked Foreground (x_c)     : 0.000046
+  Dilated Mask (x_c2)         : 0.000053
+  Shifted Eroded Foreground (x_err): 0.000026
+[033] Multiple, well-circumscribed, encapsulated nodules in the transition zone (BPH).
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[034] Transition zone BPH nodule with high T2 signal (glandular hypertrophy).
+  Original (x)                : 0.000454
+  Masked Foreground (x_c)     : 0.001447
+  Dilated Mask (x_c2)         : 0.001441
+  Shifted Eroded Foreground (x_err): 0.001139
+[035] Transition zone BPH nodule with low T2 signal (stromal hypertrophy).
+  Original (x)                : 0.002835
+  Masked Foreground (x_c)     : 0.007480
+  Dilated Mask (x_c2)         : 0.007221
+  Shifted Eroded Foreground (x_err): 0.006546
+[036] Circumscribed, stromal BPH nodule with T2 hypointense signal, mimicking cancer.
+  Original (x)                : 0.001054
+  Masked Foreground (x_c)     : 0.005055
+  Dilated Mask (x_c2)         : 0.005489
+  Shifted Eroded Foreground (x_err): 0.002871
+[037] Heterogeneous BPH nodule with a T2 hypointense rim or 'pseudo-capsule'.
+  Original (x)                : 0.000245
+  Masked Foreground (x_c)     : 0.001111
+  Dilated Mask (x_c2)         : 0.001126
+  Shifted Eroded Foreground (x_err): 0.000594
+[038] BPH nodule with internal T2 hyperintense cystic degeneration.
+  Original (x)                : 0.003629
+  Masked Foreground (x_c)     : 0.007368
+  Dilated Mask (x_c2)         : 0.006859
+  Shifted Eroded Foreground (x_err): 0.005471
+[039] Symmetrical, globular enlargement of the transition zone.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[040] Transition zone demonstrating multiple, small, T2 bright 'leave-like' changes.
+  Original (x)                : 0.000183
+  Masked Foreground (x_c)     : 0.000261
+  Dilated Mask (x_c2)         : 0.000246
+  Shifted Eroded Foreground (x_err): 0.000184
+[041] Pedunculated, intravesical protrusion of a heterogeneous transition zone nodule.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[042] Median lobe hypertrophy with heterogeneous T2 signal.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000002
+[043] Large, circumscribed, heterogeneous mass in the transition zone causing bladder outlet obstruction.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[044] Ill-defined, homogeneous, moderately hypointense lesion in the transition zone.
+  Original (x)                : 0.000039
+  Masked Foreground (x_c)     : 0.000082
+  Dilated Mask (x_c2)         : 0.000082
+  Shifted Eroded Foreground (x_err): 0.000078
+[045] Lenticular, T2 hypointense, non-circumscribed lesion in the anterior transition zone.
+  Original (x)                : 0.000133
+  Masked Foreground (x_c)     : 0.000117
+  Dilated Mask (x_c2)         : 0.000104
+  Shifted Eroded Foreground (x_err): 0.000171
+[046] Homogeneous, 'charcoal black', T2 hypointense lesion in the transition zone.
+  Original (x)                : 0.000003
+  Masked Foreground (x_c)     : 0.000008
+  Dilated Mask (x_c2)         : 0.000009
+  Shifted Eroded Foreground (x_err): 0.000012
+[047] Transition zone lesion demonstrating the 'erased charcoal sign'.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[048] Non-circumscribed, 'water-drop-shaped', T2 hypointense lesion in the transition zone.
+  Original (x)                : 0.000129
+  Masked Foreground (x_c)     : 0.000217
+  Dilated Mask (x_c2)         : 0.000207
+  Shifted Eroded Foreground (x_err): 0.000154
+[049] Ill-defined, T2 hypointense lesion in the transition zone with obscured margins.
+  Original (x)                : 0.000003
+  Masked Foreground (x_c)     : 0.000009
+  Dilated Mask (x_c2)         : 0.000009
+  Shifted Eroded Foreground (x_err): 0.000010
+[050] T2 hypointense lesion in the anterior horn of the transition zone.
+  Original (x)                : 0.578538
+  Masked Foreground (x_c)     : 0.241620
+  Dilated Mask (x_c2)         : 0.241922
+  Shifted Eroded Foreground (x_err): 0.268958
+[051] Transition zone mass with indistinct margins, invading the anterior fibromuscular stroma.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[052] Transition zone lesion with invasion of the urethral sphincter.
+  Original (x)                : 0.000009
+  Masked Foreground (x_c)     : 0.000066
+  Dilated Mask (x_c2)         : 0.000074
+  Shifted Eroded Foreground (x_err): 0.000034
+[053] Anterior, non-circumscribed, T2 hypointense mass effacing the transition zone architecture.
+  Original (x)                : 0.002809
+  Masked Foreground (x_c)     : 0.008212
+  Dilated Mask (x_c2)         : 0.007261
+  Shifted Eroded Foreground (x_err): 0.009127
+[054] Irregular, T2 hypointense mass disrupting the 'organized chaos' of the transition zone.
+  Original (x)                : 0.000021
+  Masked Foreground (x_c)     : 0.000202
+  Dilated Mask (x_c2)         : 0.000252
+  Shifted Eroded Foreground (x_err): 0.000117
+[055] Central zone demonstrating symmetric, low T2 signal.
+  Original (x)                : 0.000076
+  Masked Foreground (x_c)     : 0.000194
+  Dilated Mask (x_c2)         : 0.000150
+  Shifted Eroded Foreground (x_err): 0.000254
+[056] Normal inverted 'M' or 'mustache' appearance of the T2 hypointense central zone.
+  Original (x)                : 0.004548
+  Masked Foreground (x_c)     : 0.010832
+  Dilated Mask (x_c2)         : 0.007798
+  Shifted Eroded Foreground (x_err): 0.020527
+[057] Central zone compressed and displaced by a transition zone BPH nodule.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[058] Ill-defined T2 hypointense signal replacing the normal central zone architecture.
+  Original (x)                : 0.000208
+  Masked Foreground (x_c)     : 0.000352
+  Dilated Mask (x_c2)         : 0.000291
+  Shifted Eroded Foreground (x_err): 0.000271
+[059] T2 hypointense lesion at the prostate base infiltrating the central zone.
+  Original (x)                : 0.001667
+  Masked Foreground (x_c)     : 0.005395
+  Dilated Mask (x_c2)         : 0.006127
+  Shifted Eroded Foreground (x_err): 0.003299
+[060] Ejaculatory ducts appearing as T2 hyperintense linear structures within the central zone.
+  Original (x)                : 0.001556
+  Masked Foreground (x_c)     : 0.002072
+  Dilated Mask (x_c2)         : 0.002306
+  Shifted Eroded Foreground (x_err): 0.001769
+[061] Dilated and T2 hyperintense ejaculatory ducts, consistent with obstruction.
+  Original (x)                : 0.003256
+  Masked Foreground (x_c)     : 0.005843
+  Dilated Mask (x_c2)         : 0.007301
+  Shifted Eroded Foreground (x_err): 0.004878
+[062] Anterior fibromuscular stroma (AFMS) appearing as a symmetric, T2 hypointense band.
+  Original (x)                : 0.003147
+  Masked Foreground (x_c)     : 0.005266
+  Dilated Mask (x_c2)         : 0.004768
+  Shifted Eroded Foreground (x_err): 0.004098
+[063] Asymmetric, focal, T2 hypointense thickening of the anterior fibromuscular stroma.
+  Original (x)                : 0.057856
+  Masked Foreground (x_c)     : 0.096202
+  Dilated Mask (x_c2)         : 0.094289
+  Shifted Eroded Foreground (x_err): 0.098735
+[064] Nodular, T2 hypointense mass arising from the anterior fibromuscular stroma.
+  Original (x)                : 0.001452
+  Masked Foreground (x_c)     : 0.005676
+  Dilated Mask (x_c2)         : 0.005646
+  Shifted Eroded Foreground (x_err): 0.004034
+[065] Invasion of the T2 hypointense anterior fibromuscular stroma by an adjacent transition zone tumor.
+  Original (x)                : 0.000011
+  Masked Foreground (x_c)     : 0.000069
+  Dilated Mask (x_c2)         : 0.000070
+  Shifted Eroded Foreground (x_err): 0.000037
+[066] Homogeneous, T2 hypointense appearance of the entire prostate gland (post-radiation).
+  Original (x)                : 0.000440
+  Masked Foreground (x_c)     : 0.000860
+  Dilated Mask (x_c2)         : 0.000988
+  Shifted Eroded Foreground (x_err): 0.000412
+[067] Loss of the normal T2 hyperintense signal of the peripheral zone (atrophy).
+  Original (x)                : 0.000408
+  Masked Foreground (x_c)     : 0.000835
+  Dilated Mask (x_c2)         : 0.000635
+  Shifted Eroded Foreground (x_err): 0.000859
+[068] Preserved, thin, T2 hypointense line of the prostatic capsule.
+  Original (x)                : 0.001293
+  Masked Foreground (x_c)     : 0.002125
+  Dilated Mask (x_c2)         : 0.002091
+  Shifted Eroded Foreground (x_err): 0.002352
+[069] Focal disruption or breach of the T2 hypointense prostatic capsule.
+  Original (x)                : 0.002076
+  Masked Foreground (x_c)     : 0.004384
+  Dilated Mask (x_c2)         : 0.004549
+  Shifted Eroded Foreground (x_err): 0.002944
+[070] Irregular, spiculated outer contour of the prostatic capsule.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000010
+  Dilated Mask (x_c2)         : 0.000011
+  Shifted Eroded Foreground (x_err): 0.000015
+[071] Diffuse periprostatic T2 hyperintense stranding, consistent with inflammation.
+  Original (x)                : 0.259412
+  Masked Foreground (x_c)     : 0.385271
+  Dilated Mask (x_c2)         : 0.397668
+  Shifted Eroded Foreground (x_err): 0.362216
+[072] Normal, T2 hyperintense, 'bunch of grapes' appearance of the seminal vesicles.
+  Original (x)                : 0.000024
+  Masked Foreground (x_c)     : 0.000132
+  Dilated Mask (x_c2)         : 0.000144
+  Shifted Eroded Foreground (x_err): 0.000112
+[073] Low T2 signal intensity replacing the normal high T2 signal within a seminal vesicle.
+  Original (x)                : 0.000048
+  Masked Foreground (x_c)     : 0.000193
+  Dilated Mask (x_c2)         : 0.000198
+  Shifted Eroded Foreground (x_err): 0.000187
+[074] Asymmetric, low T2 signal and distension of one seminal vesicle.
+  Original (x)                : 0.000497
+  Masked Foreground (x_c)     : 0.002190
+  Dilated Mask (x_c2)         : 0.002178
+  Shifted Eroded Foreground (x_err): 0.002246
+[075] Markedly T2 hyperintense, thin-walled, round lesion (prostatic cyst).
+  Original (x)                : 0.000314
+  Masked Foreground (x_c)     : 0.000994
+  Dilated Mask (x_c2)         : 0.001053
+  Shifted Eroded Foreground (x_err): 0.000517
+[076] Midline, T2 hyperintense cyst near the verumontanum (utricle cyst).
+  Original (x)                : 0.004043
+  Masked Foreground (x_c)     : 0.013664
+  Dilated Mask (x_c2)         : 0.012870
+  Shifted Eroded Foreground (x_err): 0.016947
+[077] Thick-walled, T2 hyperintense collection with surrounding inflammation (prostatic abscess).
+  Original (x)                : 0.000311
+  Masked Foreground (x_c)     : 0.001143
+  Dilated Mask (x_c2)         : 0.001306
+  Shifted Eroded Foreground (x_err): 0.000829
+[078] T2 hypointense tumor signal extending into the bladder neck.
+  Original (x)                : 0.000087
+  Masked Foreground (x_c)     : 0.000222
+  Dilated Mask (x_c2)         : 0.000249
+  Shifted Eroded Foreground (x_err): 0.000266
+[079] Effacement of the normal T2 hypointense signal of the external urethral sphincter.
+  Original (x)                : 0.011375
+  Masked Foreground (x_c)     : 0.033171
+  Dilated Mask (x_c2)         : 0.036800
+  Shifted Eroded Foreground (x_err): 0.046709
+
+Style Text Softmax Probabilities
+--------------------------------------------------------------------------------
+[000] High signal-to-noise ratio (SNR) and high spatial resolution, providing sharp delineation of the hypointense prostatic capsule against hyperintense periprostatic fat.
+  Original (x)                : 0.001453
+  Masked Foreground (x_c)     : 0.003330
+  Dilated Mask (x_c2)         : 0.003411
+  Shifted Eroded Foreground (x_err): 0.004455
+[001] Low SNR, resulting in a grainy or noisy texture throughout the gland, particularly obscuring the PZ-TZ boundary.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[002] Severe motion artifacts in the phase-encoding direction, appearing as ghosting, which blurs the anterior prostatic margin and the AFMS.
+  Original (x)                : 0.000012
+  Masked Foreground (x_c)     : 0.000011
+  Dilated Mask (x_c2)         : 0.000012
+  Shifted Eroded Foreground (x_err): 0.000011
+[003] Marked susceptibility artifact from rectal gas, causing signal void and geometric distortion of the posterior peripheral zone and capsule.
+  Original (x)                : 0.000045
+  Masked Foreground (x_c)     : 0.000095
+  Dilated Mask (x_c2)         : 0.000095
+  Shifted Eroded Foreground (x_err): 0.000121
+[004] Endorectal coil acquisition: Characterized by extremely high SNR in the posterior gland (PZ) with significant signal intensity fall-off anteriorly towards the AFMS.
+  Original (x)                : 0.000004
+  Masked Foreground (x_c)     : 0.000021
+  Dilated Mask (x_c2)         : 0.000024
+  Shifted Eroded Foreground (x_err): 0.000023
+[005] Poor or failed fat saturation, resulting in high signal from periprostatic fat, which reduces the contrast and conspicuity of the capsular boundary.
+  Original (x)                : 0.448567
+  Masked Foreground (x_c)     : 0.395110
+  Dilated Mask (x_c2)         : 0.377277
+  Shifted Eroded Foreground (x_err): 0.328512
+[006] Low contrast-to-noise ratio (CNR) between the peripheral zone and transition zone, rendering zonal anatomy indistinct.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[007] Prominent chemical shift artifact at the prostate-fat interface, seen as a dark pixel band on one side and a bright band on the opposite side.
+  Original (x)                : 0.000554
+  Masked Foreground (x_c)     : 0.001540
+  Dilated Mask (x_c2)         : 0.001488
+  Shifted Eroded Foreground (x_err): 0.001505
+[008] Heavily T2-weighted sequence (long TE): Fluid in the bladder and seminal vesicles is exceptionally bright, enhancing contrast but increasing motion sensitivity.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[009] Visible aliasing (wrap-around) artifact, where structures from outside the FOV (e.g., pelvic sidewalls) are superimposed laterally.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[010] Typical 1.5T image quality: Moderate SNR, slightly less distinct zonal differentiation, and less pronounced susceptibility artifacts compared to 3T.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000013
+  Dilated Mask (x_c2)         : 0.000012
+  Shifted Eroded Foreground (x_err): 0.000013
+[011] Significant bias field artifact (intensity inhomogeneity), causing signal shading across the image, with one side of the prostate appearing darker than the other.
+  Original (x)                : 0.000053
+  Masked Foreground (x_c)     : 0.000102
+  Dilated Mask (x_c2)         : 0.000101
+  Shifted Eroded Foreground (x_err): 0.000095
+[012] Partial volume averaging due to thick slices (e.g., 5-6mm), resulting in blurred and indistinct margins at the prostatic apex and base.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[013] High spatial resolution (small voxels) but low SNR, creating a sharp yet noisy image where fine textures are obscured by grain.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[014] Non-uniform fat suppression, failing over the anterior abdominal wall and pubic bone marrow, leading to regional high signal artifacts.
+  Original (x)                : 0.002996
+  Masked Foreground (x_c)     : 0.011085
+  Dilated Mask (x_c2)         : 0.011381
+  Shifted Eroded Foreground (x_err): 0.017896
+[015] Pelvic phased-array coil acquisition: Good, uniform signal intensity and SNR across the entire prostate and surrounding pelvic structures.
+  Original (x)                : 0.000003
+  Masked Foreground (x_c)     : 0.000010
+  Dilated Mask (x_c2)         : 0.000013
+  Shifted Eroded Foreground (x_err): 0.000006
+[016] Signal void artifacts from metallic surgical clips (e.g., post-TURP or lymphadenectomy) obscuring the prostatic base and bladder neck.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[017] Peristaltic motion from the rectum causing blurring and distortion of the posterior capsule and neurovascular bundles.
+  Original (x)                : 0.000018
+  Masked Foreground (x_c)     : 0.000112
+  Dilated Mask (x_c2)         : 0.000110
+  Shifted Eroded Foreground (x_err): 0.000111
+[018] High-contrast 3T image: Hyperintense PZ, heterogeneous intermediate-signal TZ, and a clearly defined hypointense capsule.
+  Original (x)                : 0.000057
+  Masked Foreground (x_c)     : 0.000049
+  Dilated Mask (x_c2)         : 0.000051
+  Shifted Eroded Foreground (x_err): 0.000015
+[019] Washed-out appearance with low overall contrast, likely due to improper window/level settings or insufficient T2 weighting (short TE).
+  Original (x)                : 0.002659
+  Masked Foreground (x_c)     : 0.001898
+  Dilated Mask (x_c2)         : 0.001519
+  Shifted Eroded Foreground (x_err): 0.002254
+[020] Multiple punctate signal voids within the TZ and at the PZ-TZ interface, consistent with calcifications causing susceptibility artifacts.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[021] Pixelated appearance, indicative of a low-resolution acquisition matrix or excessive digital zoom.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[022] Complete failure of fat saturation: Periprostatic fat, subcutaneous fat, and bone marrow are all hyperintense, masking capsular margins.
+  Original (x)                : 0.288982
+  Masked Foreground (x_c)     : 0.226028
+  Dilated Mask (x_c2)         : 0.210707
+  Shifted Eroded Foreground (x_err): 0.159232
+[023] Image acquired with a mispositioned or partially inflated endorectal coil, leading to asymmetric signal intensity and distortion.
+  Original (x)                : 0.000004
+  Masked Foreground (x_c)     : 0.000011
+  Dilated Mask (x_c2)         : 0.000012
+  Shifted Eroded Foreground (x_err): 0.000016
+[024] Image plane is obliquely angulated, not a true axial, coronal, or sagittal view, complicating volumetric assessment.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[025] Severe B1 field inhomogeneity (dielectric effect) at 3T, causing a central signal drop-out within the transition zone.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[026] Motion artifact from bladder pulsatility creating phase ghosts superior to the prostate, overlapping the seminal vesicles.
+  Original (x)                : 0.000010
+  Masked Foreground (x_c)     : 0.000025
+  Dilated Mask (x_c2)         : 0.000022
+  Shifted Eroded Foreground (x_err): 0.000030
+[027] Minimally T2-weighted: Fluid signal is only moderately bright, and tissue contrast (PZ/TZ) is notably poor.
+  Original (x)                : 0.002418
+  Masked Foreground (x_c)     : 0.003445
+  Dilated Mask (x_c2)         : 0.002951
+  Shifted Eroded Foreground (x_err): 0.003346
+[028] Pronounced signal loss (T2 shortening) in the posterior PZ due to hemosiderin from recent biopsy, mimicking a tumor.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000002
+[029] Image corrupted by a linear 'zipper' artifact (k-space spike) running horizontally through the gland.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[030] Field of View (FOV) is too small (truncated), cutting off the lateral margins of the periprostatic fat and seminal vesicles.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[031] Field of View (FOV) is excessively large, leading to small prostate size on the image and reduced effective spatial resolution.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[032] High-quality 3T study: Uniform signal, excellent fat suppression, and crisp zonal boundaries, ideal for segmentation.
+  Original (x)                : 0.147161
+  Masked Foreground (x_c)     : 0.139611
+  Dilated Mask (x_c2)         : 0.129685
+  Shifted Eroded Foreground (x_err): 0.158158
+[033] Grainy, low-signal image, likely a 1.5T acquisition with insufficient signal averages (NEX/NSA) or a large patient.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000001
+[034] Prominent pulsatility artifacts from the iliac arteries, causing ghost replicas of the vessels across the image.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[035] Incomplete saturation of the periprostatic venous plexus, which appears bright and can be mistaken for or obscure EPE.
+  Original (x)                : 0.000458
+  Masked Foreground (x_c)     : 0.001188
+  Dilated Mask (x_c2)         : 0.001368
+  Shifted Eroded Foreground (x_err): 0.001131
+[036] Massive susceptibility artifact from a total hip prosthesis, creating a large signal void and severe distortion that obliterates the entire ipsilateral gland.
+  Original (x)                : 0.077789
+  Masked Foreground (x_c)     : 0.167044
+  Dilated Mask (x_c2)         : 0.208931
+  Shifted Eroded Foreground (x_err): 0.287483
+[037] Non-uniform signal intensity within the peripheral zone itself, likely a 'coil sensitivity' variation rather than true pathology.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[038] Over-smoothed image due to post-processing (e.g., noise reduction filter), resulting in a 'waxy' appearance and loss of fine texture.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[039] Image demonstrates a good trade-off between scan time and quality: minor graininess is present, but all critical boundaries are defined.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000002
+[040] Blooming susceptibility artifacts from numerous brachytherapy seeds, appearing as signal voids larger than the seeds themselves.
+  Original (x)                : 0.000044
+  Masked Foreground (x_c)     : 0.000039
+  Dilated Mask (x_c2)         : 0.000054
+  Shifted Eroded Foreground (x_err): 0.000022
+[041] Failed water suppression (e.g., in a fat-only sequence), resulting in an inverted-contrast appearance.
+  Original (x)                : 0.000138
+  Masked Foreground (x_c)     : 0.000164
+  Dilated Mask (x_c2)         : 0.000174
+  Shifted Eroded Foreground (x_err): 0.000092
+[042] Respiratory motion artifact causing blurring and indistinctness of the prostatic base and bladder neck interface.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[043] Severe aliasing from a small FOV in the phase-encode direction, wrapping the posterior buttocks anteriorly over the prostate.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[044] Image has a 'flat' dynamic range, with all tissues compressed into a narrow range of intermediate gray signals.
+  Original (x)                : 0.000003
+  Masked Foreground (x_c)     : 0.000002
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000003
+[045] High-resolution coronal T2: Sharp, high-contrast delineation of the prostatic apex and its interface with the hypointense external urethral sphincter.
+  Original (x)                : 0.001403
+  Masked Foreground (x_c)     : 0.001718
+  Dilated Mask (x_c2)         : 0.001853
+  Shifted Eroded Foreground (x_err): 0.002621
+[046] High-resolution sagittal T2: Clear visualization of the AFMS, bladder neck, and the retroprostatic fat plane.
+  Original (x)                : 0.000222
+  Masked Foreground (x_c)     : 0.000334
+  Dilated Mask (x_c2)         : 0.000355
+  Shifted Eroded Foreground (x_err): 0.000451
+[047] Image globally blurred due to gross patient movement during the acquisition, rendering all structures indistinct.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[048] Visible Gibbs (truncation) ringing artifacts, appearing as fine parallel lines near high-contrast edges like the bladder wall or capsule.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[049] Minimal artifacts, uniform signal, and excellent PZ-TZ contrast; a high-diagnostic-quality study.
+  Original (x)                : 0.000021
+  Masked Foreground (x_c)     : 0.000015
+  Dilated Mask (x_c2)         : 0.000016
+  Shifted Eroded Foreground (x_err): 0.000016
+[050] Diffuse signal hypointensity across the entire gland, characteristic of post-radiation fibrosis, reducing all internal contrast.
+  Original (x)                : 0.000835
+  Masked Foreground (x_c)     : 0.001058
+  Dilated Mask (x_c2)         : 0.001185
+  Shifted Eroded Foreground (x_err): 0.000966
+[051] Image quality compromised by severe ascites, which introduces motion, signal inhomogeneity, and dielectric effects.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[052] Moderate T2 weighting (TE ~80-100ms), providing a good balance between high SNR and sufficient T2 contrast.
+  Original (x)                : 0.000891
+  Masked Foreground (x_c)     : 0.000822
+  Dilated Mask (x_c2)         : 0.000778
+  Shifted Eroded Foreground (x_err): 0.000656
+[053] Image acquired using parallel imaging (e.g., SENSE, GRAPPA) with a high acceleration factor, leading to central SNR drop-off or noise enhancement.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[054] Geometric distortion (warping) at the peripheries of the field of view, causing the prostate to appear slightly ovoid or misshapen.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[055] Noisy' fat suppression: The signal from fat is not nulled to black but remains as a grainy, intermediate-gray signal.
+  Original (x)                : 0.000001
+  Masked Foreground (x_c)     : 0.000003
+  Dilated Mask (x_c2)         : 0.000002
+  Shifted Eroded Foreground (x_err): 0.000009
+[056] Excellent flow compensation, rendering blood vessels (venous plexus, iliacs) as dark, signal-void structures.
+  Original (x)                : 0.000007
+  Masked Foreground (x_c)     : 0.000023
+  Dilated Mask (x_c2)         : 0.000026
+  Shifted Eroded Foreground (x_err): 0.000028
+[057] Incomplete flow suppression, with hyperintense signal in pelvic vessels leading to pulsatility ghosting artifacts.
+  Original (x)                : 0.000142
+  Masked Foreground (x_c)     : 0.000382
+  Dilated Mask (x_c2)         : 0.000351
+  Shifted Eroded Foreground (x_err): 0.000317
+[058] High-resolution 3D T2 acquisition (e.g., CUBE, SPACE): Isotropic voxels provide sharp multiplanar reformats, but with slightly lower SNR than 2D.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[059] 3D T2 acquisition with motion artifact, resulting in a 'stair-step' artifact on sagittal and coronal reformats.
+  Original (x)                : 0.000002
+  Masked Foreground (x_c)     : 0.000004
+  Dilated Mask (x_c2)         : 0.000004
+  Shifted Eroded Foreground (x_err): 0.000003
+[060] Image from an air-filled endorectal coil, causing a large susceptibility artifact and signal void at the posterior gland boundary.
+  Original (x)                : 0.000010
+  Masked Foreground (x_c)     : 0.000036
+  Dilated Mask (x_c2)         : 0.000043
+  Shifted Eroded Foreground (x_err): 0.000047
+[061] Low-field (e.g., 0.5T or 1.0T) acquisition: Characterized by fundamentally low SNR, poor resolution, and long scan times.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[062] Poor shimming, resulting in non-uniform signal and failed, patchy fat saturation across the field of view.
+  Original (x)                : 0.022850
+  Masked Foreground (x_c)     : 0.044338
+  Dilated Mask (x_c2)         : 0.045669
+  Shifted Eroded Foreground (x_err): 0.029904
+[063] Signal-void artifacts from metallic sutures in the post-prostatectomy bed, obscuring assessment of the anastomosis.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000001
+[064] Chemical shift artifact (Type 2) causing blurring and signal loss at zonal boundaries due to intravoxel dephasing.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000001
+  Dilated Mask (x_c2)         : 0.000001
+  Shifted Eroded Foreground (x_err): 0.000003
+[065] High-bandwidth acquisition: Minimizes chemical shift and susceptibility artifacts but at the cost of reduced SNR.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[066] Low-bandwidth acquisition: Maximizes SNR and contrast but is highly sensitive to motion, chemical shift, and susceptibility artifacts.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[067] Image windowed too brightly (high window center/width), saturating the high-signal PZ and seminal vesicles, obscuring internal detail.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[068] Image windowed too darkly (low window center/width), making the hypointense capsule and AFMS indistinguishable from signal void.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[069] Strong dielectric shading at 3T in a large patient, causing a 'dark' band across the center of the abdomen, affecting the prostate.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[070] T2-weighted turbo spin-echo (TSE) sequence with a long echo train length, causing perceptible blurring of edges and T2 decay effects.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[071] Single-shot fast spin-echo (ssFSE) acquisition: Inherently low resolution and blurred, 'smeared' appearance, but very fast and motion-robust.
+  Original (x)                : 0.000020
+  Masked Foreground (x_c)     : 0.000016
+  Dilated Mask (x_c2)         : 0.000014
+  Shifted Eroded Foreground (x_err): 0.000027
+[072] Image quality degraded by an improperly placed anterior surface coil, leading to poor signal in the anterior gland.
+  Original (x)                : 0.000008
+  Masked Foreground (x_c)     : 0.000051
+  Dilated Mask (x_c2)         : 0.000043
+  Shifted Eroded Foreground (x_err): 0.000062
+[073] Posterior signal drop-off in a 1.5T exam using only an anterior phased-array coil, compromising PZ visualization.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[074] Cross-talk artifact: Faint lines visible at the intersection of slice groups in an interleaved acquisition.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[075] Data clipping artifact: Regions of extremely high signal (e.g., urine) appear 'flat' white with a surrounding dark halo.
+  Original (x)                : 0.000039
+  Masked Foreground (x_c)     : 0.000055
+  Dilated Mask (x_c2)         : 0.000049
+  Shifted Eroded Foreground (x_err): 0.000097
+[076] Scan acquired with anti-peristaltic agent (e.g., Glucagon): Rectal wall is sharp and motion-free, improving posterior margin assessment.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[077] Scan acquired without anti-peristaltic agent: Significant blurring and ghosting from the rectum, obscuring the posterior capsule.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+[078] High-resolution, small FOV 'zoom' scan of the prostate: Excellent detail but potential for aliasing if outer suppression bands fail.
+  Original (x)                : 0.000110
+  Masked Foreground (x_c)     : 0.000202
+  Dilated Mask (x_c2)         : 0.000205
+  Shifted Eroded Foreground (x_err): 0.000253
+[079] Vibration artifact (e.g., from gradient knocking or cooling system), causing fine, 'wavy' lines or 'herringbone' patterns across the image.
+  Original (x)                : 0.000000
+  Masked Foreground (x_c)     : 0.000000
+  Dilated Mask (x_c2)         : 0.000000
+  Shifted Eroded Foreground (x_err): 0.000000
+
+Subset Mean Scores (cosine * scale)
+--------------------------------------------------------------------------------
+Subset 1
+  Original (x)                : 33.487359
+  Masked Foreground (x_c)     : 33.380954
+  Dilated Mask (x_c2)         : 33.306262
+  Shifted Eroded Foreground (x_err): 32.287737
+Subset 2
+  Original (x)                : 31.974139
+  Masked Foreground (x_c)     : 32.129991
+  Dilated Mask (x_c2)         : 32.079356
+  Shifted Eroded Foreground (x_err): 31.061240
+Subset 3
+  Original (x)                : 32.836075
+  Masked Foreground (x_c)     : 32.948877
+  Dilated Mask (x_c2)         : 32.879941
+  Shifted Eroded Foreground (x_err): 31.780673
+Subset 4
+  Original (x)                : 32.683589
+  Masked Foreground (x_c)     : 32.704093
+  Dilated Mask (x_c2)         : 32.662422
+  Shifted Eroded Foreground (x_err): 31.608108
+Subset 5
+  Original (x)                : 32.761965
+  Masked Foreground (x_c)     : 32.757128
+  Dilated Mask (x_c2)         : 32.687257
+  Shifted Eroded Foreground (x_err): 31.589913
