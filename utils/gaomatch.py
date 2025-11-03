@@ -12,12 +12,13 @@ class gapmatch_targeted_v1:
     它依赖调用者（训练循环）通过梯度累积来正确填充
     param.grad（即 g1 和 g2）。
     """
-    def __init__(self, encoder_params, decoder_params, gamma=0.5):
+    def __init__(self, encoder_params, decoder_params, gamma=0.5, offload_to_cpu=False):
         # 将参数列表转换为集合，以便快速查找（如果需要）
         # 但我们这里直接迭代列表
         self.encoder_params = list(encoder_params)
         self.decoder_params = list(decoder_params)
         self.gamma = gamma
+        self.offload_to_cpu = offload_to_cpu
 
         # g1 (velocity) 和 theta (backup) 分开存储
         self.velocity_enc = {}
@@ -38,9 +39,13 @@ class gapmatch_targeted_v1:
             if param.grad is None:
                 continue
             
-            g1_dec = param.grad.data.clone()
-            self.velocity_dec[param] = g1_dec # 保存 g1
-            self.backup[param] = param.data.clone() # 保存 theta
+            g1_dec = param.grad.data.detach()
+            if self.offload_to_cpu:
+                self.velocity_dec[param] = g1_dec.cpu()  # 保存 CPU 版本的 g1
+                self.backup[param] = param.data.detach().cpu()  # 保存 CPU 版本的 theta
+            else:
+                self.velocity_dec[param] = g1_dec.clone()  # 保存 g1
+                self.backup[param] = param.data.detach().clone()  # 保存 theta
             
             r_at = epsilon * g1_dec / self._get_norm(g1_dec)
             param.data.add_(r_at) # 应用 theta*
@@ -50,9 +55,13 @@ class gapmatch_targeted_v1:
             if param.grad is None:
                 continue
             
-            g1_enc = param.grad.data.clone()
-            self.velocity_enc[param] = g1_enc # 保存 g1
-            self.backup[param] = param.data.clone() # 保存 theta
+            g1_enc = param.grad.data.detach()
+            if self.offload_to_cpu:
+                self.velocity_enc[param] = g1_enc.cpu()
+                self.backup[param] = param.data.detach().cpu()
+            else:
+                self.velocity_enc[param] = g1_enc.clone()
+                self.backup[param] = param.data.detach().clone()
             
             # 编码器的扰动 r(g1) 是基于其 *自己的* g1 (可能是复合梯度)
             r_at = epsilon * g1_enc / self._get_norm(g1_enc)
@@ -68,28 +77,46 @@ class gapmatch_targeted_v1:
             if param.grad is None:
                 # 如果 g2 由于某种原因不存在，则跳过
                 if param in self.backup:
-                    param.data = self.backup[param] # 仍需恢复 theta
+                    backup = self.backup[param]
+                    param.data.copy_(backup.to(param.data.device))
                 continue
 
-            g2 = param.grad.data.clone()
+            if self.offload_to_cpu:
+                g2 = param.grad.data.detach().cpu()
+                blended = self.gamma * g2 + (1 - self.gamma) * g1
+                param.grad.data.copy_(blended.to(param.grad.device))
+                backup = self.backup.get(param)
+                if backup is not None:
+                    param.data.copy_(backup.to(param.data.device))
+            else:
+                g2 = param.grad.data.clone()
             
-            # GAPv4 合并逻辑: g_u = gamma*g2 + (1-gamma)*g1
-            # (注意：我们在 train.py 中使用的是 (1-g)*g1 + g*g2，这里保持一致)
-            param.grad.data = self.gamma * g2 + (1 - self.gamma) * g1
-            
-            # 恢复 theta
-            param.data = self.backup[param]
+                # GAPv4 合并逻辑: g_u = gamma*g2 + (1-gamma)*g1
+                # (注意：我们在 train.py 中使用的是 (1-g)*g1 + g*g2，这里保持一致)
+                param.grad.data = self.gamma * g2 + (1 - self.gamma) * g1
+
+                # 恢复 theta
+                param.data.copy_(self.backup[param])
 
         # --- 处理编码器 ---
         for param, g1 in self.velocity_enc.items():
             if param.grad is None:
                 if param in self.backup:
-                    param.data = self.backup[param]
+                    backup = self.backup[param]
+                    param.data.copy_(backup.to(param.data.device))
                 continue
                 
-            g2 = param.grad.data.clone()
-            param.grad.data = self.gamma * g2 + (1 - self.gamma) * g1
-            param.data = self.backup[param]
+            if self.offload_to_cpu:
+                g2 = param.grad.data.detach().cpu()
+                blended = self.gamma * g2 + (1 - self.gamma) * g1
+                param.grad.data.copy_(blended.to(param.grad.device))
+                backup = self.backup.get(param)
+                if backup is not None:
+                    param.data.copy_(backup.to(param.data.device))
+            else:
+                g2 = param.grad.data.clone()
+                param.grad.data = self.gamma * g2 + (1 - self.gamma) * g1
+                param.data.copy_(self.backup[param])
 
         # 清理状态
         self.velocity_enc.clear()

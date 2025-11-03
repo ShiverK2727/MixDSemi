@@ -109,3 +109,35 @@ python train_unet_only_UCP_DC_v2.py \
 screen -dmS unet-ucp-symGD-DC-5-busi-d1-129 bash -c python train_unet_only_UCP_DC_v2.py   --dataset prostate   --lb_domain 6   --lb_num 20   --save_name Unet_UCP_symGD_5_DC_v2_d6   --gpu 0   --save_model   --overwrite   --dc_parts 5   --expend_test_steps_interval 250   --expend_max_steps 2000   --expand_conf_threshold 0.6   --expand_conf_weight 1.0   --expend_test_samples 32   --curr_conf_weight 1.0   --curr_conf_threshold 0.75   --curr_conf_samples 64   --ul_weight 1.0   --lu_weight 1.0   --cons_weight 1.0   --llm_model gemini   --describe_nums 80 
 
 
+
+
+
+python train_MiDSS_NDC_MARK2_CLIP.py --dataset prostate --lb_num 20 --lb_domain 1 --max_iterations 10000 --biomedclip_path /root/models/BiomedCLIP --gpu 0 --save_model --save_name vpt_basic_test_d1 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_ortho_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+
+
+
+python train_MiDSS_NDC_MARK2_CLIP.py --dataset prostate --lb_num 20 --lb_domain 6 --max_iterations 10000 --biomedclip_path /root/models/BiomedCLIP --gpu 1 --save_model --save_name vpt_basic_test_d6 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_ortho_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+#####
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP.py --dataset prostate --lb_num 20 --lb_domain 1 --max_iterations 2000 --biomedclip_path /root/models/BiomedCLIP --gpu 2 --save_model --save_name vpt_basic_test_d1 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_ortho_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP.py --dataset prostate --lb_num 20 --lb_domain 6 --max_iterations 2000 --biomedclip_path /root/models/BiomedCLIP --gpu 3 --save_model --save_name vpt_basic_test_d6 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_ortho_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP.py --dataset prostate --lb_num 20 --lb_domain 1 --max_iterations 2000 --biomedclip_path /root/models/BiomedCLIP --gpu 1 --save_model --save_name vpt_basic_test_d1_vpt6 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_ortho_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 6 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP_INV.py --dataset prostate --lb_num 20 --lb_domain 1 --max_iterations 2000 --biomedclip_path /root/models/BiomedCLIP --gpu 1 --save_model --save_name vpt_basic_test_d1 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_ortho_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP_INV.py --dataset prostate --lb_num 20 --lb_domain 1 --max_iterations 500 --biomedclip_path /root/models/BiomedCLIP --gpu 2 --save_model --save_name vpt_basic_test_d1_vpt6 --seed 1337 --label_bs 4 --unlabel_bs 4 --text_num_subsets 4 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model GPT5 --describe_nums 80 --clip_loss_mv_anchor_weight 1.0 --clip_loss_sw_reg_weight 1.0 --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --overwrite
+
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP_INV_MASK.py --dataset prostate --save_name vpt_invariant_test_d1_crop --overwrite --save_model --gpu 0 --seed 1337 --max_iterations 2000 --lb_domain 1 --lb_num 40 --lb_ratio 0.0 --preprocess_dir /app/MixDSemi/SynFoCLIP/preprocess/ProstateSlice --llm_model gemini --describe_nums 40 --clip_loss_mv_anchor_weight 1.0 --clip_loss_sw_reg_weight 1.0 --clip_loss_crop_weight 0.5 --crop_morph_k_min 3 --crop_morph_k_max 15 --biomedclip_path /root/models/BiomedCLIP --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --text_root /app/MixDSemi/SynFoCLIP/code/text --text_num_subsets 4 --save_name complete_crop_test --overwrite
+
+
+
