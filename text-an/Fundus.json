@@ -1,6 +1,6 @@
 {
   "gemini": {
-    "cup": [
+    "optic cup": [
       "A small, central, circular optic cup with a well-defined boundary marked by a gentle slope and minimal vascular deflection. The cup-to-disc ratio (CDR) is approximately 0.2.",
       "The optic cup is small, symmetrically round, with a clear color transition from the pale center to the robust, concentric, pink neuroretinal rim.",
       "Shallow central cup with an indistinct, sloping boundary; segmentation relies on identifying the subtle color shift from pallor to rim tissue.",
@@ -82,7 +82,7 @@
       "The disc is severely tilted (dysplastic). The cup is a shallow, horizontal slit, and its boundaries are defined more by the disc's abnormal shape than by true excavation.",
       "The entire cup floor is obscured by a dense, white, fibrous epipapillary membrane, making the cup depth and internal boundary unassessable."
     ],
-    "disc": [
+    "optic disc": [
       "A well-demarcated, circular optic disc with a sharp boundary defined by a clear color transition from the pink neuroretinal rim to the orange-red retina.",
       "Vertically oval disc with a distinct boundary. The internal structure shows a healthy, concentric pink rim and a small central cup (CDR $approx$ 0.2).",
       "Disc boundary is clearly delineated 360 degrees by a narrow, pale scleral ring (Elschnig's ring), external to the neuroretinal rim.",
@@ -166,7 +166,7 @@
     ]
   },
   "GPT5": {
-    "cup": [
+    "optic cup": [
       "Optic cup exhibits a vertically elongated contour with well-defined superior and inferior margins; cup-to-disc ratio approximately 0.7, indicating substantial neuroretinal rim thinning.",
       "Cup presents a concentric, circular depression centered within the optic disc with sharp demarcation and uniform pallor; rim tissue evenly distributed.",
       "Cup margin irregular with temporal widening; nasal rim preserved; color contrast between cup floor and surrounding rim distinctly visible.",
@@ -248,7 +248,7 @@
       "Cup small, concentric, central pallor uniform; rim tissue thick and sharply bordered.",
       "Cup with superior notch and inferior thickening; contour asymmetrical but sharply defined."
     ],
-    "disc": [
+    "optic disc": [
       "Optic disc appears round with sharply demarcated margins; uniform pink coloration indicating healthy perfusion.",
       "Disc margin slightly blurred superiorly, suggesting early edema; overall circular contour preserved.",
       "Optic disc vertically oval with distinct border and moderate central pallor consistent with physiologic variation.",
@@ -332,7 +332,7 @@
     ]
   },
   "DeepSeek": {
-    "cup": [
+    "optic cup": [
       "Deep optic cup with sharply defined, circular margin and uniform pallor throughout.",
       "Shallow optic cup with sloping, ill-defined nasal margin and mottled pallor.",
       "Vertically oval optic cup with temporal margin more deeply excavated than nasal margin.",
@@ -414,7 +414,7 @@
       "Optic cup with focal coloboma involving superior temporal quadrant.",
       "Optic cup with morning glory configuration with central glial tissue."
     ],
-    "disc": [
+    "optic disc": [
       "Optic disc with sharply demarcated, circular margin and uniform pink coloration throughout.",
       "Optic disc with temporal peripapillary atrophy creating an irregular, scalloped border.",
       "Vertically oval optic disc with distinct margin superiority but blurred nasal border.",

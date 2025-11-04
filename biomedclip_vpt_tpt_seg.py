@@ -41,7 +41,7 @@ class VisualPromptConfig:
 @dataclass
 class TextPromptConfig:
     """TPT (CoOp-style) 基础配置 (已修改)."""
-    embed_dim: int = 512  # 文本编码器内部维度
+    embed_dim: int = 768  # 文本编码器内部维度 (BERT hidden size)
     num_prompts: int = 4
     init_std: float = 0.02
     # (已移除 num_layers)
@@ -180,14 +180,25 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         self.visual_prompt_learner = VisualPromptLearner(visual_prompt_config)
         self.text_prompt_learner = TextPromptLearner(text_prompt_config)
         
-        self.clip_embed_dim = self.model.text.proj.shape[1]
+        # 获取 CLIP 嵌入维度（修复：text.proj 是 Sequential，使用 output_dim）
+        if hasattr(self.model.text, 'output_dim'):
+            self.clip_embed_dim = self.model.text.output_dim
+        elif hasattr(self.model.text, 'proj') and isinstance(self.model.text.proj, nn.Sequential):
+            # 如果 proj 是 Sequential，取最后一层的输出维度
+            self.clip_embed_dim = self.model.text.proj[-1].out_features
+        else:
+            # 回退方案：假设标准 CLIP 维度
+            self.clip_embed_dim = 512
+            print(f"警告: 无法自动检测 CLIP 嵌入维度，使用默认值 {self.clip_embed_dim}")
         
         for param in self.visual_prompt_learner.parameters():
             param.requires_grad = True
         for param in self.text_prompt_learner.parameters():
             param.requires_grad = True
         
-        self.to(self.model.device)
+        # 获取模型所在设备（修复：模型对象没有 .device 属性）
+        model_device = next(self.model.parameters()).device
+        self.to(model_device)
 
         total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print("=" * 70)
@@ -198,12 +209,20 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         print("=" * 70)
 
     # ------------------------------------------------------------------
+    # 辅助方法：获取模型设备
+    # ------------------------------------------------------------------
+    @property
+    def device(self) -> torch.device:
+        """获取模型所在设备"""
+        return next(self.model.parameters()).device
+
+    # ------------------------------------------------------------------
     # 视觉编码 (VPT-Deep) - (与 v2 相同)
     # ------------------------------------------------------------------
     def _visual_forward_with_prompts(self, images: torch.Tensor) -> torch.Tensor:
         """在 BiomedCLIP 图像分支中注入 VPT-Deep prompts (V_l)"""
         trunk = self.model.visual.trunk
-        device = images.device
+        device = self.device
         batch_size = images.shape[0]
 
         x_patches = trunk.patch_embed(images)
@@ -211,8 +230,8 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         x = torch.cat([cls_token, x_patches], dim=1)
         
         x = x + trunk.pos_embed[:, : x.size(1), :]
-        x = x.pos_drop(x)
-        x = x.patch_drop(x)
+        x = trunk.pos_drop(x)
+        x = trunk.patch_drop(x)
 
         norm_pre = getattr(trunk, "norm_pre", None)
         if norm_pre is not None and not isinstance(norm_pre, nn.Identity):
@@ -234,104 +253,136 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         return patch_features
 
     # ------------------------------------------------------------------
-    # 文本编码 (TPT - CoOp-style) - (已重写)
+    # 文本编码 (TPT - CoOp-style) - 适配 BiomedCLIP (BERT tokenizer)
     # ------------------------------------------------------------------
     def encode_text_with_prompts(self, text_list: List[str]) -> torch.Tensor:
         """
         在 BiomedCLIP 文本分支中注入 CoOp-style prompts (C_l)
-        构建 [SOT, C_l, Class, EOT] 序列
+        构建 [CLS, C_l, Class, SEP] 序列 (BERT风格)
         
         Args:
             text_list (list[str]): K 个类别的原始字符串 (例如 ["prostate", "background"])
+        
+        Note:
+            BiomedCLIP 使用 HFTokenizer (BERT风格):
+            - CLS token (ID=2) 作为句子开始
+            - SEP token (ID=3) 作为句子结束
+            - PAD token (ID=0) 作为填充
         """
         
         text_transformer = self.model.text
-        device = self.model.device
+        device = self.device
         K = len(text_list) # 类别数
 
         # 1. 获取可学习的上下文 (C_l)
-        # self.text_prompt_learner.prompts 的形状是 [P_t, D_text]
-        context_vectors = self.text_prompt_learner.prompts # [P_t, 512]
+        context_vectors = self.text_prompt_learner.prompts # [P_t, D_text]
         P_t = context_vectors.shape[0]
 
-        # 2. 获取 SOT (Start) 和 EOT (End) 嵌入
-        sot_token = torch.tensor([[self.tokenizer.sot_token_id]], device=device).long()
-        eot_token = torch.tensor([[self.tokenizer.eot_token_id]], device=device).long()
+        # 2. 获取 CLS 和 SEP 的 token ID (BERT风格)
+        if hasattr(self.tokenizer, 'tokenizer'):
+            # HFTokenizer 包装器
+            cls_token_id = self.tokenizer.tokenizer.cls_token_id  # 2
+            sep_token_id = self.tokenizer.tokenizer.sep_token_id  # 3
+        else:
+            # 回退方案
+            cls_token_id = 2
+            sep_token_id = 3
         
-        sot_embed = text_transformer.token_embedding(sot_token).squeeze(0) # [1, 512]
-        eot_embed = text_transformer.token_embedding(eot_token).squeeze(0) # [1, 512]
+        # 3. 获取 CLS 和 SEP 嵌入
+        # BiomedCLIP 使用 BERT，需要通过 transformer.embeddings 获取嵌入
+        if hasattr(text_transformer.transformer, 'embeddings'):
+            # BERT 模型有 embeddings 属性
+            cls_token = torch.tensor([[cls_token_id]], device=device).long()
+            sep_token = torch.tensor([[sep_token_id]], device=device).long()
+            
+            cls_embed = text_transformer.transformer.embeddings.word_embeddings(cls_token).squeeze(0) # [1, D]
+            sep_embed = text_transformer.transformer.embeddings.word_embeddings(sep_token).squeeze(0) # [1, D]
+        else:
+            raise AttributeError("无法找到 BERT 的 embeddings 层")
 
-        # 3. 准备 K 个类别的嵌入
+        # 4. 准备 K 个类别的嵌入
         all_text_features = []
         for class_name in text_list:
-            # 3.1 Tokenize 单个类名
-            # open_clip tokenizer 会自动添加 SOT 和 EOT，我们需要移除它们
-            class_tokens = self.tokenizer(class_name).to(device) # [1, 77]
+            # 4.1 Tokenize 单个类名
+            # HFTokenizer 自动添加 [CLS] 和 [SEP]
+            class_tokens = self.tokenizer(class_name).to(device) # [1, seq_len]
             
-            # 找到 EOT token 的索引
-            eot_idx = (class_tokens == self.tokenizer.eot_token_id).nonzero()[0, 1]
-            # 只保留 SOT 和 EOT 之间的 class token id (即索引 1 到 eot_idx-1)
-            class_tokens_clean = class_tokens[0, 1:eot_idx] # [L_k]
+            # 4.2 找到 SEP token 的位置（第一个SEP，通常是最后一个非PAD token）
+            sep_indices = (class_tokens == sep_token_id).nonzero(as_tuple=False)
+            if len(sep_indices) > 0:
+                sep_idx = sep_indices[0, 1].item()
+            else:
+                # 如果没有找到SEP，假设在最后
+                sep_idx = (class_tokens != 0).sum(dim=1).item() - 1
             
-            # 3.2 嵌入类名
-            class_embed = text_transformer.token_embedding(class_tokens_clean) # [L_k, 512]
+            # 只保留 CLS 和 SEP 之间的 token (即索引 1 到 sep_idx-1)
+            class_tokens_clean = class_tokens[0, 1:sep_idx] # [L_k]
+            
+            # 4.3 嵌入类名
+            class_embed = text_transformer.transformer.embeddings.word_embeddings(class_tokens_clean) # [L_k, D]
             L_k = class_embed.shape[0]
             
-            # 3.3 构建完整的序列: [SOT, C_l, Class, EOT]
-            # [1, D], [P_t, D], [L_k, D], [1, D]
+            # 4.4 构建完整的序列: [CLS, C_l, Class, SEP]
             full_sequence = torch.cat(
                 [
-                    sot_embed,
-                    context_vectors,
-                    class_embed,
-                    eot_embed
+                    cls_embed,       # [1, D]
+                    context_vectors, # [P_t, D]
+                    class_embed,     # [L_k, D]
+                    sep_embed        # [1, D]
                 ],
                 dim=0
             ) # [1 + P_t + L_k + 1, D]
             
-            # 3.4 添加位置编码
             seq_len = full_sequence.shape[0]
-            if seq_len > text_transformer.positional_embedding.shape[0]:
-                raise ValueError(f"序列长度 {seq_len} 超过了 CLIP 的最大位置编码 {text_transformer.positional_embedding.shape[0]}")
-                
-            full_sequence = full_sequence + text_transformer.positional_embedding[:seq_len]
             
-            # 3.5 准备 Transformer 输入
-            # (Batch size = 1, Seq_len, Dim)
-            full_sequence = full_sequence.unsqueeze(0) 
-            # LND -> NLD (Transformer 期望的输入)
-            x = full_sequence.permute(1, 0, 2) # [Seq, 1, D]
+            # 4.5 添加位置编码和 token_type_ids (BERT需要)
+            # BERT 的位置编码通过 embeddings 层处理
+            position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0) # [1, seq_len]
+            token_type_ids = torch.zeros(1, seq_len, dtype=torch.long, device=device) # [1, seq_len]
             
-            # 4. (新) 单次前向传播
-            # (注意：我们不再逐层循环，而是完整运行)
-            x = text_transformer.transformer(x) 
+            position_embeddings = text_transformer.transformer.embeddings.position_embeddings(position_ids)
+            token_type_embeddings = text_transformer.transformer.embeddings.token_type_embeddings(token_type_ids)
             
-            x = x.permute(1, 0, 2)  # NLD -> LND [1, Seq, D]
-            x = text_transformer.ln_final(x)
+            # 完整的 BERT 嵌入 = token_embed + position_embed + token_type_embed
+            full_sequence = full_sequence.unsqueeze(0) # [1, seq_len, D]
+            embeddings = full_sequence + position_embeddings + token_type_embeddings
+            embeddings = text_transformer.transformer.embeddings.LayerNorm(embeddings)
+            embeddings = text_transformer.transformer.embeddings.dropout(embeddings)
             
-            # 5. 池化
-            # 我们使用 EOT token (最后一个 token) 的输出来池化
-            # 它的索引是 seq_len - 1
-            # open_clip 标准做法是使用 token id 列表中的 argmax，我们这里简化
-            # 为与 open_clip 行为一致，应使用 argmax 索引 EOT
-            # [SOT, C_l(P_t), Class(L_k), EOT]
-            # EOT 索引是 1 + P_t + L_k
-            eot_index_in_sequence = 1 + P_t + L_k
+            # 4.6 准备 attention mask (全1，表示所有token都参与attention)
+            attention_mask = torch.ones(1, seq_len, dtype=torch.long, device=device)
             
-            # pooled = x[0, eot_index_in_sequence, :] @ text_transformer.text_projection
+            # 转换为 BERT 需要的 extended_attention_mask
+            extended_attention_mask = text_transformer.transformer.get_extended_attention_mask(
+                attention_mask, (1, seq_len), device
+            )
             
-            # 使用 open_clip 的标准池化方式更安全
-            # 构造一个假的 token id 列表来匹配
-            fake_token_ids = torch.zeros(1, seq_len, dtype=torch.long, device=device)
-            fake_token_ids[0, eot_index_in_sequence] = self.tokenizer.eot_token_id # 放置 EOT id
+            # 4.7 通过 BERT encoder
+            encoder_outputs = text_transformer.transformer.encoder(
+                embeddings,
+                attention_mask=extended_attention_mask,
+            )
             
-            pooled = x[
-                torch.arange(x.shape[0]), fake_token_ids.argmax(dim=-1)
-            ] @ text_transformer.text_projection
+            sequence_output = encoder_outputs[0] # [1, seq_len, D]
+            
+            # 4.8 应用 pooler（如果存在）
+            # open_clip 的 pooler 期望完整的 encoder_outputs 对象
+            if hasattr(text_transformer, 'pooler') and text_transformer.pooler is not None:
+                pooled_output = text_transformer.pooler(encoder_outputs, attention_mask)
+            else:
+                # 回退：使用 CLS token (第一个token) 的输出
+                pooled_output = sequence_output[:, 0, :] # [1, D]
+            
+            # 4.10 应用投影层
+            if hasattr(text_transformer, 'proj'):
+                # proj 是 Sequential(Linear, GELU, Linear)
+                text_features = text_transformer.proj(pooled_output) # [1, output_dim]
+            else:
+                text_features = pooled_output
+            
+            all_text_features.append(text_features.squeeze(0))
 
-            all_text_features.append(pooled.squeeze(0))
-
-        # 6. 堆叠 K 个类别的原型
+        # 5. 堆叠 K 个类别的原型
         W_robust = torch.stack(all_text_features, dim=0) # [K, D]
         W_robust = F.normalize(W_robust, dim=-1)
         
@@ -357,7 +408,7 @@ class VPT_TPT_CLIP_Seg(nn.Module):
                 "H_semantic_maps": [B, K, N] 最终的 14x14 语义图 (N=196)
                 "patch_features": [B, N, D] 域不变的 patch 特征 (用于一致性损失)
         """
-        device = self.model.device
+        device = self.device
         images = images.to(device)
         # (text_list 已经是字符串列表)
 
@@ -405,7 +456,7 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
-            state_dict = torch.load(filepath, map_location=map_location or self.model.device)
+            state_dict = torch.load(filepath, map_location=map_location or self.device)
             
         self.visual_prompt_learner.load_from_state_dict(state_dict['visual_prompt_learner'])
         self.text_prompt_learner.load_from_state_dict(state_dict['text_prompt_learner'])
@@ -495,10 +546,13 @@ def build_vpt_tpt_seg_model(
         visual_embed_dim = 768
         
     try:
-        # (文本层数不再需要)
-        text_embed_dim = base_model.text.token_embedding.embedding_dim
+        # BiomedCLIP 使用 BERT，获取 word_embeddings 维度
+        if hasattr(base_model.text.transformer, 'embeddings'):
+            text_embed_dim = base_model.text.transformer.embeddings.word_embeddings.embedding_dim
+        else:
+            text_embed_dim = 768  # BERT 默认维度
     except Exception:
-        text_embed_dim = 512
+        text_embed_dim = 768  # BERT 默认维度
 
     visual_prompt_config = VisualPromptConfig(
         embed_dim=visual_embed_dim,

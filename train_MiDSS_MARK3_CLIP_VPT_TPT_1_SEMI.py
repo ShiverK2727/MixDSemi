@@ -19,9 +19,9 @@ from tqdm import tqdm
 
 import dataloaders.custom_transforms as tr
 from dataloaders.dataloader_dc import BUSISegmentation, FundusSegmentation, MNMSSegmentation, ProstateSegmentation
-# 导入新的 Invariant-Only 模型
-from biomedclip_vpt_invariant_only import build_invariant_prompt_image_encoder
-from utils.text_sampler_v2 import TextSampler
+# 导入 VPT+TPT 分割模型
+from biomedclip_vpt_tpt_seg import build_vpt_tpt_seg_model
+from utils.text_sampler_an import TextSampler
 from torch.cuda.amp import GradScaler, autocast
 from utils.training import cycle
 
@@ -74,40 +74,25 @@ parser.add_argument('--describe_nums', type=int, default=40,
                     choices=[20, 40, 60, 80],
                     help='Number of textual descriptions for preprocessing')
 
-# ==================== Loss Configuration (简化) ====================
-clip_loss_group = parser.add_argument_group('CLIP Loss Configuration')
-clip_loss_group.add_argument('--clip_loss_mv_anchor_weight', type=float, default=1.0,
-                            help='Weight for (loss_mv + loss_anchor) term')
-clip_loss_group.add_argument('--clip_loss_sw_reg_weight', type=float, default=1.0,
-                            help='Weight for loss_sw_reg term')
-
-# ==================== BiomedCLIP with Visual Prompts (简化) ====================
+# ==================== VPT + TPT Configuration ====================
 parser.add_argument('--biomedclip_path', type=str, default='/root/models/BiomedCLIP',
                     help='Root directory containing BiomedCLIP weights and config JSON')
-parser.add_argument('--biomedclip_num_prompts', type=int, default=4,
-                    help='Number of prompts per prompt group')
-parser.add_argument('--biomedclip_embed_dim', type=int, default=768,
-                    help='Embedding dimension for BiomedCLIP prompts')
-parser.add_argument('--biomedclip_init_std', type=float, default=0.02,
-                    help='Initialization std for prompt parameters')
-parser.add_argument('--biomedclip_prompt_scale_init', type=float, default=1.0,
-                    help='Initial prompt scaling factor')
-parser.add_argument('--biomedclip_lr', type=float, default=1e-4,
-                    help='Learning rate for BiomedCLIP optimizer')
-parser.add_argument('--biomedclip_weight_decay', type=float, default=1e-2,
-                    help='Weight decay for BiomedCLIP optimizer')
-parser.add_argument('--biomedclip_disable_scale', action='store_true',
-                    help='Disable learnable prompt scaling (fix to 1.0)')
+parser.add_argument('--visual_num_prompts', type=int, default=4,
+                    help='Number of visual prompts per layer (VPT-Deep)')
+parser.add_argument('--text_num_prompts', type=int, default=4,
+                    help='Number of text context prompts (TPT CoOp-style)')
+parser.add_argument('--vpt_tpt_lr', type=float, default=1e-4,
+                    help='Learning rate for VPT+TPT optimizer')
+parser.add_argument('--vpt_tpt_weight_decay', type=float, default=1e-2,
+                    help='Weight decay for VPT+TPT optimizer')
+parser.add_argument('--freeze_backbone', action='store_true', default=True,
+                    help='Freeze BiomedCLIP backbone (only train prompts)')
 
 # ==================== Text Sampler ====================
 parser.add_argument('--text_root', type=str, default='/app/MixDSemi/SynFoCLIP/code/text',
                     help='Directory containing dataset text description JSON files')
-parser.add_argument('--text_num_subsets', type=int, default=4,
-                    help='Number of subsets to sample per iteration (0 disables sampling)')
 
 args = parser.parse_args()
-
-args.biomedclip_enable_scale = not args.biomedclip_disable_scale
 
 TEXT_DATASET_DEFAULTS = {
     'fundus': 'Fundus',
@@ -186,65 +171,53 @@ def train(args, snapshot_path):
     lb_dataset = dataset(**lb_kwargs)
     ulb_dataset = dataset(**ulb_kwargs)
 
-    # ... (TextSampler 逻辑保持不变) ...
     # --- Text sampling ---
-    # 使用新版 TextSampler (text_sampler_v2.py)，其 load_texts 返回三元组：
-    #   (targets_texts, style_texts, flat_list)
-    # - targets_texts: 按类别组织的字典（不包含 style）
-    # - style_texts: 单独的 style 文本列表（可能为空）
-    # - flat_list: 把所有 targets_texts 按 key 顺序拼接得到的扁平文本列表
+    # 使用 text_sampler_an.py，其 load_texts 返回二元组：
+    #   (per_class_lists, flat_list)
+    # - per_class_lists: list of lists，每项是一个类别的文本列表
+    # - flat_list: 所有类别按顺序拼接的扁平列表
     text_dataset_key = TEXT_DATASET_DEFAULTS.get(args.dataset)
     text_sampler = TextSampler(args.text_root)
-    targets_texts, style_texts, flat_list = text_sampler.load_texts(
+    per_class_lists, flat_list = text_sampler.load_texts(
         dataset=text_dataset_key,
         llm=args.llm_model,
         describe_nums=args.describe_nums,
     )
 
-    # 为 targets_texts 生成子集（style 不参与分组采样）
-    per_type_subsets, text_subsets = text_sampler.sample_subsets(
-        targets_texts,
-        num_samples=args.text_num_subsets
-    )
-
     logging.info(
-        "TextSampler loaded dataset '%s' (target types=%d, flat_texts=%d, style_texts=%d, subsets=%d)",
+        "TextSampler loaded dataset '%s' (num_classes=%d, total_texts=%d)",
         text_dataset_key,
-        len(targets_texts),
+        len(per_class_lists),
         len(flat_list),
-        len(style_texts),
-        len(text_subsets),
     )
 
-    # --- 实例化 Invariant-Only BiomedCLIP ---
-    biomedclip_model = None
-    biomedclip_optimizer = None
-    biomedclip_preprocess = None
-    biomedclip_tokenizer = None
-
-    unet_device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-    # 使用新的 builder
-    biomedclip_model, biomedclip_preprocess, biomedclip_tokenizer = build_invariant_prompt_image_encoder(
+    # --- 实例化 VPT+TPT 分割模型 ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    vpt_tpt_model, preprocess, tokenizer = build_vpt_tpt_seg_model(
         model_path=args.biomedclip_path,
-        device=str(unet_device),
-        num_prompts=args.biomedclip_num_prompts,
-        embed_dim=args.biomedclip_embed_dim,
-        init_std=args.biomedclip_init_std,
-        prompt_scale_init=args.biomedclip_prompt_scale_init,
-        enable_prompt_scale=args.biomedclip_enable_scale,
-        freeze_backbone=True,
+        device=str(device),
+        visual_num_prompts=args.visual_num_prompts,
+        text_num_prompts=args.text_num_prompts,
+        freeze_backbone=args.freeze_backbone,
     )
     
-    trainable_params = [p for p in biomedclip_model.prompt_learner.parameters() if p.requires_grad]
-    biomedclip_optimizer = optim.AdamW(
+    # 收集所有可训练参数（VPT + TPT）
+    trainable_params = []
+    trainable_params.extend(vpt_tpt_model.visual_prompt_learner.parameters())
+    trainable_params.extend(vpt_tpt_model.text_prompt_learner.parameters())
+    trainable_params = [p for p in trainable_params if p.requires_grad]
+    
+    optimizer = optim.AdamW(
         trainable_params,
-        lr=args.biomedclip_lr,
-        weight_decay=args.biomedclip_weight_decay,
+        lr=args.vpt_tpt_lr,
+        weight_decay=args.vpt_tpt_weight_decay,
     )
+    
     logging.info(
-        "BiomedCLIP Invariant-Only prompt encoder initialized on %s (trainable params=%d)",
-        unet_device,
-        sum(p.numel() for p in trainable_params) if trainable_params else 0,
+        "VPT+TPT model initialized on %s (trainable params=%d)",
+        device,
+        sum(p.numel() for p in trainable_params),
     )
 
     # ... (DataLoader 逻辑保持不变) ...
@@ -268,34 +241,48 @@ def train(args, snapshot_path):
     amp_cm = autocast if amp_enabled else contextlib.nullcontext
     logging.info(f"AMP (Mixed Precision) enabled: {amp_enabled}")
 
-    # ... (CLIP text Process 逻辑保持不变) ...
-    logging.info("Starting text feature pre-calculation for semantic anchors...")
-    with torch.no_grad():
-        # 注意：这里我们对 "targets" 的扁平化文本列表进行 tokenization
-        # (不包含 style_texts)，flat_list 来自 text_sampler_v2.load_texts()
-        all_text_tokenized = biomedclip_tokenizer(flat_list).to(unet_device)
-        all_text_features = biomedclip_model.encode_text(all_text_tokenized)
-    all_text_features = F.normalize(all_text_features, dim=-1)
-    a_global_anchor = torch.mean(all_text_features, dim=0, keepdim=True)
-    a_global_anchor = F.normalize(a_global_anchor, dim=-1) # [1, 512]
-
-    p_k_anchors = []
-    for sub_set in text_subsets:
-        with torch.no_grad():
-            tokens = biomedclip_tokenizer(sub_set).to(unet_device)
-            sub_text_features = biomedclip_model.encode_text(tokens)
-            p_k = torch.mean(sub_text_features, dim=0)
-            p_k = F.normalize(p_k, dim=-1)
-            p_k_anchors.append(p_k)
-    p_k_anchors = torch.stack(p_k_anchors, dim=0) # [K, 512]
-    print(f"p_k_anchors shape: {p_k_anchors.shape}")
-    logging.info("Completed BiomedCLIP text encoding for all descriptions and subsets.")
-
-    # --- Main training loop (简化) ---
-    p_bar = tqdm(range(1, max_iterations + 1), desc=f'VPT Invariant-Only Training')
+    # --- 预编码类别文本特征 (使用 args.class_text 和 per_class_lists) ---
+    # 为每个类别（包括背景）获取其所有文本描述并预编码
+    logging.info("Pre-encoding class text features for K=%d classes...", len(args.class_text))
     
-    if biomedclip_model is not None:
-        biomedclip_model.train()
+    # 为每个类别收集文本描述
+    # args.class_text = ['background', 'class1', 'class2', ...]
+    # per_class_lists[i] 对应 args.class_text[i+1]（因为 per_class_lists 通常不含 background）
+    # 但为了安全，我们直接使用 per_class_lists 的长度匹配
+    
+    class_text_features_list = []
+    with torch.no_grad():
+        for i, class_name in enumerate(args.class_text):
+            if i == 0:
+                # 背景类：使用类名本身
+                texts_for_class = [class_name]
+            else:
+                # 前景类：使用 per_class_lists 中对应的文本（索引 i-1）
+                if i - 1 < len(per_class_lists):
+                    texts_for_class = per_class_lists[i - 1]
+                else:
+                    # 如果 per_class_lists 不够长，回退到类名
+                    logging.warning(f"per_class_lists 索引 {i-1} 越界，使用类名 '{class_name}'")
+                    texts_for_class = [class_name]
+            
+            # 使用 VPT_TPT 模型的 encode_text_with_prompts 预编码
+            # 注意：这会应用 TPT (CoOp-style) prompts
+            W_class = vpt_tpt_model.encode_text_with_prompts(texts_for_class)  # [len(texts), D]
+            # 对该类的所有文本取平均得到类原型
+            W_class_mean = W_class.mean(dim=0, keepdim=True)  # [1, D]
+            class_text_features_list.append(W_class_mean)
+        
+        # 堆叠为 [K, D]
+        class_text_features = torch.cat(class_text_features_list, dim=0)  # [K, D]
+        class_text_features = F.normalize(class_text_features, dim=-1)
+    
+    logging.info(f"Pre-encoded class_text_features: {class_text_features.shape}")
+    # class_text_features 现在可以在训练循环中直接使用
+
+    # --- Main training loop (VPT+TPT) ---
+    p_bar = tqdm(range(1, max_iterations + 1), desc=f'VPT+TPT Training')
+    
+    vpt_tpt_model.train()
 
     for iter_num in p_bar:
         lb_sample = next(lb_dataloader)
@@ -305,99 +292,105 @@ def train(args, snapshot_path):
         
         lb_unet_size_x_w, ulb_unet_size_x_w, ulb_unet_size_x_s = lb_unet_size_x_w.cuda(), ulb_unet_size_x_w.cuda(), ulb_unet_size_x_s.cuda()
 
-        # ========== 1. CLIP 侧 (VPT 教师) 训练 (简化) ==========
+        # ====== 下采样标签到 14x14 并构建多通道（背景, 类1, 类2, ...） ======
+        if 'unet_size_label' in lb_sample:
+            lb_unet_size_label = lb_sample['unet_size_label']
+            # 规范形状 -> (B, H, W)
+            if isinstance(lb_unet_size_label, torch.Tensor):
+                if lb_unet_size_label.dim() == 4 and lb_unet_size_label.size(1) == 1:
+                    lb_unet_size_label = lb_unet_size_label.squeeze(1)
+            else:
+                lb_unet_size_label = torch.as_tensor(lb_unet_size_label)
+            lb_unet_size_label = lb_unet_size_label.long().cuda()
 
-        weak_images = torch.cat([lb_unet_size_x_w, ulb_unet_size_x_w], dim=0)
-        strong_images_ulb = ulb_unet_size_x_s
-        
-        
-        weak_images_preprocessed = biomedclip_model.encode_image_from_tensor(
-            weak_images, biomedclip_preprocess, return_tokens=False
-        )['image_features'] # (此辅助函数已包含 preprocess)
-        
-        strong_images_ulb_preprocessed = biomedclip_model.encode_image_from_tensor(
-            strong_images_ulb, biomedclip_preprocess, return_tokens=False
-        )['image_features']
-        
-        # f_all_w 形状: [B_lb + B_ulb, 512]
-        f_all_w = weak_images_preprocessed
-        # f_ulb_s 形状: [B_ulb, 512]
-        f_ulb_s = strong_images_ulb_preprocessed
-        # f_ulb_w 形状: [B_ulb, 512]
-        f_ulb_w = f_all_w[args.label_bs:]
+            B, H, W = lb_unet_size_label.shape
+            channels = num_classes + 1  # background + n foreground classes
 
+            # 简单检查
+            max_label_val = int(lb_unet_size_label.max().item())
+            if max_label_val >= channels:
+                logging.warning(f"Label max value ({max_label_val}) >= expected channels ({channels}).")
+
+            # 构建 one-hot (B, C, H, W)
+            one_hot = torch.zeros((B, channels, H, W), dtype=torch.float32, device=lb_unet_size_label.device)
+            for c in range(channels):
+                one_hot[:, c, :, :] = (lb_unet_size_label == c).float()
+
+            # 使用自适应平均池化下采样到 14x14
+            lb_label_14 = F.adaptive_avg_pool2d(one_hot, (14, 14))
+            lb_sample['unet_label_14'] = lb_label_14
+
+        # ========== VPT+TPT 前向过程 ==========
+        # 对 labeled 和 unlabeled weak 图像进行前向
         with amp_cm():
-            # 1. loss_mv_anchor
-            # a_global_anchor: [1, 512], f_all_w: [B_total, 512]
-            loss_mv = (1 - F.cosine_similarity(f_all_w, a_global_anchor)).mean()
+            # 1. 对 labeled 图像前向
+            from biomedclip_vpt_tpt_seg import preprocess_tensor_images
+            lb_images_preprocessed = preprocess_tensor_images(lb_unet_size_x_w, preprocess, str(device))
+            lb_outputs = vpt_tpt_model(lb_images_preprocessed, args.class_text)
+            # lb_outputs: {
+            #   "H_semantic_maps": [B_lb, K, 196],
+            #   "patch_features": [B_lb, 196, D],
+            #   "W_robust": [K, D]
+            # }
             
-            # p_k_anchors: [K, 512], f_all_w: [B_total, 512]
-            sim_matrix = f_all_w @ p_k_anchors.T # [B_total, K]
-            loss_anchor = (1 - sim_matrix.max(dim=1).values).mean()
+            # 2. 对 unlabeled weak 图像前向
+            ulb_images_weak_preprocessed = preprocess_tensor_images(ulb_unet_size_x_w, preprocess, str(device))
+            ulb_weak_outputs = vpt_tpt_model(ulb_images_weak_preprocessed, args.class_text)
             
-            loss_mv_anchor = loss_mv + loss_anchor
+            # 3. 对 unlabeled strong 图像前向
+            ulb_images_strong_preprocessed = preprocess_tensor_images(ulb_unet_size_x_s, preprocess, str(device))
+            ulb_strong_outputs = vpt_tpt_model(ulb_images_strong_preprocessed, args.class_text)
             
-            # 2. loss_sw_reg
-            loss_sw_reg = (1 - F.cosine_similarity(f_ulb_w, f_ulb_s.detach())).mean()
+            # ========== Loss 计算（留空，交由用户设计） ==========
+            # 可用的变量：
+            # - lb_outputs["H_semantic_maps"]: [B_lb, K, 196] labeled 语义图
+            # - lb_outputs["patch_features"]: [B_lb, 196, D] labeled patch 特征
+            # - lb_sample['unet_label_14']: [B_lb, K, 14, 14] 下采样的标签（如果存在）
+            # - ulb_weak_outputs, ulb_strong_outputs: unlabeled 的输出
+            # - class_text_features: [K, D] 预编码的类别文本特征
             
-            # 3. Total loss (移除 loss_ortho)
-            loss_clip_total = (
-                args.clip_loss_mv_anchor_weight * loss_mv_anchor
-                + args.clip_loss_sw_reg_weight * loss_sw_reg
-            )
-
-        biomedclip_optimizer.zero_grad()
-        
-        scaler.scale(loss_clip_total).backward()
-        scaler.step(biomedclip_optimizer)
+            # TODO: 在这里添加你的损失函数
+            loss_total = torch.tensor(0.0, device=device)  # 占位符
+            
+        optimizer.zero_grad()
+        scaler.scale(loss_total).backward()
+        scaler.step(optimizer)
         scaler.update()
 
-        # ========== All U-Net and SSL Logic REMOVED ==========
-        
-        # Update Tensorboard (简化)
-        writer.add_scalar('train/clip_loss_total', loss_clip_total.item(), iter_num)
-        writer.add_scalar('train/clip_loss_mv_anchor', loss_mv_anchor.item(), iter_num)
-        writer.add_scalar('train/clip_loss_sw_reg', loss_sw_reg.item(), iter_num)
-        writer.add_scalar('train/biomedclip_lr', biomedclip_optimizer.param_groups[0]['lr'], iter_num)
+        # Update Tensorboard
+        writer.add_scalar('train/loss_total', loss_total.item(), iter_num)
+        writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], iter_num)
 
-        # Update tqdm description (简化)
+        # Update tqdm
         p_bar.set_description(
-            'iter %d: clip_loss=%.4f (mv_a:%.4f, sw_r:%.4f)'
-            % (iter_num, loss_clip_total.item(), 
-               loss_mv_anchor.item(),
-               loss_sw_reg.item())
+            'iter %d: loss=%.4f' % (iter_num, loss_total.item())
         )
 
-        # Log to console (简化)
+        # Log to console
         if iter_num % 50 == 0:
             logging.info(
-                "iter %d: clip_loss=%.6f, mv_anchor=%.6f, sw_reg=%.6f",
+                "iter %d: loss=%.6f",
                 iter_num,
-                loss_clip_total.item(),
-                loss_mv_anchor.item(),
-                loss_sw_reg.item(),
+                loss_total.item(),
             )
             
     if p_bar is not None:
         p_bar.close()
 
-    # ========== Save Final VPT Weights ==========
+    # ========== Save Final VPT+TPT Weights ==========
     if args.save_model:
-        save_text_vpt = "vpt_final_weights.pth"
-        save_best_vpt = os.path.join(snapshot_path, save_text_vpt)
-        if biomedclip_model is not None:
-            # (已更新) InvariantPromptBiomedCLIP 有 .save_prompts()
-            biomedclip_model.save_prompts(save_best_vpt)
-            logging.info(f"Saved final Invariant-Only VPT (prompt_learner) weights to {save_best_vpt}")
+        save_path = os.path.join(snapshot_path, "vpt_tpt_final_weights.pth")
+        vpt_tpt_model.save_all_prompts(save_path)
+        logging.info(f"Saved final VPT+TPT weights to {save_path}")
 
     writer.close()
-    logging.info("VPT Invariant-Only training finished.")
+    logging.info("VPT+TPT training finished.")
 
 
 if __name__ == "__main__":
     # ... (snapshot_path 和数据集配置保持不变) ...
     if len(args.save_name) == 0:
-        args.save_name = f'vpt_invariant_only_lb{args.lb_num}_dm{args.lb_domain}' # 新的默认名称
+        args.save_name = f'vpt_tpt_seg_lb{args.lb_num}_dm{args.lb_domain}'
     snapshot_path = "../model/" + args.dataset + f"/{sys.argv[0].split('.')[0]}/" + args.save_name + "/"
     
     if args.dataset == 'fundus':

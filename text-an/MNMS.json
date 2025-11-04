@@ -1,6 +1,6 @@
 {
   "gemini": {
-    "left ventricle (LV)": [
+    "left ventricle": [
       "Normal LV morphology: Conical shape with smooth, well-demarcated endocardial and epicardial borders. Normal myocardial thickness.",
       "Well-defined, continuous endocardial border with fine trabeculae carneae confined to the apical third.",
       "Normal LV geometry with two distinct, small anterolateral and posteromedial papillary muscles, clearly separate from the free wall.",
@@ -82,7 +82,7 @@
       "Diffuse myocardial thinning with a superimposed focal pseudoaneurysm of the inferolateral wall, defined by a narrow neck.",
       "Mid-cavity obstruction from focal severe hypertrophy, combined with a large, distinct apical aneurysm."
     ],
-    "left ventricle myocardium (MYO)": [
+    "left ventricle myocardium": [
       "Normal myocardium: Uniform thickness (6-10mm) with sharp, smooth endocardial and epicardial contours. Homogeneous appearance.",
       "Myocardium exhibits clear delineation from the blood pool (endocardium) and pericardial fat (epicardium).",
       "Normal myocardial wall thickness throughout all 17 segments. Endocardial border is distinct from papillary muscles.",
@@ -164,7 +164,7 @@
       "Mid-cavity obstruction from focal, severe myocardial hypertrophy, combined with a large, distinct apical aneurysm (thinned wall).",
       "Extremely prominent and fused anterolateral and posteromedial papillary muscles. Adjacent myocardial wall is normal thickness."
     ],
-    "right ventricle (RV)": [
+    "right ventricle": [
       "Normal RV morphology: Crescent-shaped chamber wrapping around the LV. Thin free wall (2-4mm) with a clearly defined epicardial border.",
       "Smooth, thin RV free wall. Endocardial border is distinct, with fine trabeculations, primarily in the apical and inferior walls.",
       "Well-defined tricuspid valve plane, clearly demarcating the basal boundary of the RV inflow.",
@@ -248,7 +248,7 @@
     ]
   },
   "GPT5": {
-    "left ventricle (LV)": [
+    "left ventricle": [
       "Normal left ventricle with uniform myocardial wall thickness and smooth endocardial and epicardial borders visible across short-axis cine frames.",
       "Concentric left ventricular hypertrophy with symmetric thickening of the myocardial wall, most pronounced at the interventricular septum and lateral wall.",
       "Eccentric left ventricular hypertrophy with dilated chamber cavity and asymmetric wall thickening predominantly involving the inferolateral wall.",
@@ -330,7 +330,7 @@
       "Localized subendocardial enhancement involving the basal anterior wall post-infarction.",
       "Global LV dilation with thinning most pronounced at apex and mid-lateral wall."
     ],
-    "left ventricle myocardium (MYO)": [
+    "left ventricle myocardium": [
       "Normal left ventricular myocardium with uniform wall thickness and homogeneous signal intensity throughout all segments.",
       "Concentric myocardial thickening with symmetric increase in wall thickness and preserved tissue homogeneity.",
       "Eccentric myocardial hypertrophy showing asymmetric thickening predominantly in the lateral wall with normal tissue intensity.",
@@ -412,7 +412,7 @@
       "Basal inferolateral myocardium showing subepicardial fibrosis with uniform wall thickness.",
       "Myocardium with diffuse thickening secondary to hypertrophic cardiomyopathy, no enhancement."
     ],
-    "right ventricle (RV)": [
+    "right ventricle": [
       "Normal right ventricle with thin free wall and well-defined endocardial and epicardial borders throughout the cardiac cycle.",
       "Mild right ventricular dilation with uniform wall thickness and preserved trabecular pattern.",
       "Severe right ventricular enlargement with thinned free wall and rounded chamber morphology.",
@@ -496,7 +496,7 @@
     ]
   },
   "DeepSeek": {
-    "left ventricle (LV)": [
+    "left ventricle": [
       "Normal left ventricle with uniform wall thickness, smooth endocardial border, and symmetric contraction. No regional wall motion abnormalities.",
       "Severely dilated left ventricle with globular remodeling, thin myocardial walls, and diffusely hypokinetic motion.",
       "Concentric left ventricular hypertrophy with uniform >15mm wall thickness throughout, small cavity size, and preserved systolic function.",
@@ -578,7 +578,7 @@
       "Extensive transmural enhancement of entire anteroseptal wall with complete akinesis.",
       "Moderate concentric hypertrophy with delayed hyperenhancement in basal inferolateral wall."
     ],
-    "left ventricle myocardium (MYO)": [
+    "left ventricle myocardium": [
       "Normal left ventricular myocardium with uniform wall thickness (7-9mm), smooth endocardial and epicardial borders, and homogeneous signal intensity.",
       "Severe concentric hypertrophy with diffuse myocardial wall thickening >15mm throughout all segments, maintained layered structure.",
       "Transmural myocardial infarction with thinned anteroseptal myocardium (<4mm), replaced by fibrotic tissue showing late gadolinium enhancement.",
@@ -660,7 +660,7 @@
       "Chronic ischemic cardiomyopathy with multiple subendocardial scars and global hypokinesis.",
       "Focal apical cap with thin, akinetic myocardium and preserved contractility elsewhere."
     ],
-    "right ventricle (RV)": [
+    "right ventricle": [
       "Normal right ventricle with crescentic shape, thin wall (2-4mm), prominent trabeculations, and distinct separation from left ventricle.",
       "Severe right ventricular dilation with globular remodeling, increased transverse diameter, and apical disengagement from left ventricle.",
       "Arrhythmogenic right ventricular cardiomyopathy with regional wall motion abnormalities, focal aneurysms, and fibrofatty replacement.",
