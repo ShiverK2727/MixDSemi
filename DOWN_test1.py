@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from batchgenerators.utilities.file_and_folder_operations import *
 
 # --- 配置 ---
-IMAGE_ROOT = "/app/MixDSemi/data/ProstateSlice/BIDMC/train/image"
+IMAGE_ROOT = "/app/MixDSemi/data/mnms/vendorC/train/image"
 all_images = subfiles(IMAGE_ROOT, suffix=".png", join=True)
 all_masks = [i.replace("/image/", "/mask/") for i in all_images]
 
@@ -95,6 +95,6 @@ def visualize_and_save_masks(images, masks, output_dir, max_samples=None):
 if __name__ == "__main__":
 	# 输出目录放在脚本同级目录下的 test_visuals
 	script_dir = os.path.dirname(os.path.abspath(__file__))
-	outdir = os.path.join(script_dir, "test_visuals")
+	outdir = os.path.join(script_dir, "test_visuals_mnms")
 	# 为了快速验证，默认处理前 20 个样本；如果想处理全部，把 max_samples 设置为 None
 	visualize_and_save_masks(all_images, all_masks, outdir, max_samples=20)

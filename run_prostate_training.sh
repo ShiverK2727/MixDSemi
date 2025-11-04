@@ -106,3 +106,24 @@ python train_MiDSS_NDC_MARK2_UNET.py --dataset prostate --save_name BCP_NDC_P1_p
 
 
 
+
+
+
+python /app/MixDSemi/SynFoCLIP/code/train_MiDSS_NDC_MARK2_CLIP_DEEP_INV_PRE1.py --dataset prostate --gpu 0 --save_name vpt_anchor_pretrain --lb_num 20 --llm_model GPT5 --describe_nums 80 --text_num_subsets 4 --max_iterations 2000 
+
+
+python train_MiDSS_NDC_MARK2_CLIP_DEEP_INV_PRE1.py --dataset prostate --save_name vpt_anchor_pretrain_1 --save_model --gpu 0 --seed 1337 --max_iterations 2000 --lb_domain 1 --lb_num 20 --llm_model GPT5 --describe_nums 80 --text_root /app/MixDSemi/SynFoCLIP/code/text --text_num_subsets 4 --biomedclip_path /root/models/BiomedCLIP --biomedclip_num_prompts 4 --biomedclip_embed_dim 768 --biomedclip_init_std 0.02 --biomedclip_prompt_scale_init 1.0 --biomedclip_lr 0.0001 --biomedclip_weight_decay 0.01 --w_semantic 1.0 --w_invariance 0.5 --w_style_neg 0.1 --overwrite
+
+
+
+python test_MiDSS_NDC_MARK2_CLIP_DEEP_INV_PRE1_DEBUG.py \
+  --dataset prostate \
+  --prompts_path ../model/prostate/pretrain_anchor/vpt_anchor_pretrain_1/vpt_anchor_final.pth \
+  --output_dir ../model/prostate/pretrain_anchor/vpt_anchor_pretrain_1/vis_test \
+  --biomedclip_path /root/models/BiomedCLIP \
+  --text_root /app/MixDSemi/SynFoCLIP/code/text \
+  --llm_model GPT5 \
+  --describe_nums 80 \
+  --text_num_subsets 4 \
+  --gpu 0 \
+  --overwrite
