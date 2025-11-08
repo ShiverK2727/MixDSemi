@@ -58,6 +58,160 @@ class adjust_light():
             sample['image'] = image
         return sample
 
+
+class AdaptiveCLAHE():
+    """Adaptive histogram equalization (CLAHE) with a probability.
+
+    Operates on a PIL Image. For color images we convert to LAB and apply CLAHE
+    on the L channel (preserves color). Parameters:
+      p: probability to apply (default 0.5)
+      clipLimit: CLAHE clipLimit (default 2.0)
+      tileGridSize: tile grid size (default (8,8))
+    """
+    def __init__(self, p=0.5, clipLimit=2.0, tileGridSize=(8, 8)):
+        self.p = float(p)
+        self.clipLimit = float(clipLimit)
+        self.tileGridSize = tuple(tileGridSize)
+
+    def __call__(self, img_or_sample):
+        """Accept either a PIL Image or a sample dict {'image': PIL, ...}.
+        If given a dict, modifies and returns the dict; otherwise returns PIL Image.
+        """
+        is_dict = isinstance(img_or_sample, dict)
+        img = img_or_sample['image'] if is_dict else img_or_sample
+
+        # probability gate
+        if random.random() >= self.p:
+            return img_or_sample if is_dict else img
+
+        try:
+            arr = np.array(img)
+            if arr.ndim == 2 or (arr.ndim == 3 and arr.shape[2] == 1):
+                # grayscale
+                gray = arr if arr.ndim == 2 else arr[:, :, 0]
+                clahe = cv2.createCLAHE(clipLimit=self.clipLimit, tileGridSize=self.tileGridSize)
+                out = clahe.apply(gray.astype(np.uint8))
+                out_img = Image.fromarray(out.astype(np.uint8))
+            elif arr.ndim == 3 and arr.shape[2] == 3:
+                # color: convert to LAB, apply to L channel
+                try:
+                    lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+                    l, a, b = cv2.split(lab)
+                    clahe = cv2.createCLAHE(clipLimit=self.clipLimit, tileGridSize=self.tileGridSize)
+                    l2 = clahe.apply(l.astype(np.uint8))
+                    lab2 = cv2.merge([l2, a, b])
+                    out = cv2.cvtColor(lab2, cv2.COLOR_LAB2RGB)
+                    out_img = Image.fromarray(out.astype(np.uint8))
+                except Exception:
+                    # fallback: apply per-channel CLAHE
+                    out = np.zeros_like(arr)
+                    clahe = cv2.createCLAHE(clipLimit=self.clipLimit, tileGridSize=self.tileGridSize)
+                    for c in range(3):
+                        out[:, :, c] = clahe.apply(arr[:, :, c].astype(np.uint8))
+                    out_img = Image.fromarray(out.astype(np.uint8))
+            else:
+                # unexpected shape -> return original
+                out_img = img
+        except Exception:
+            # any error -> return original
+            out_img = img
+
+        if is_dict:
+            img_or_sample['image'] = out_img
+            return img_or_sample
+        else:
+            return out_img
+
+
+class AdaptiveCLAHERandomized():
+    """Adaptive CLAHE with randomized clipLimit and tileGridSize drawn from provided ranges.
+
+    Usage:
+      p: probability to apply
+      clipLimit_range: (min, max) floats, sampled uniformly
+      tileGridSize_range: either ((min_h, min_w), (max_h, max_w)) or (min_val, max_val)
+                         integers; each dimension is sampled uniformly in the integer range.
+
+    Behavior mirrors `AdaptiveCLAHE` but on each call samples new clipLimit and tileGridSize
+    within the provided ranges.
+    """
+    def __init__(self, p=0.5, clipLimit_range=(1.0, 3.0), tileGridSize_range=((4, 4), (16, 16))):
+        self.p = float(p)
+        # normalize clip limit range
+        if isinstance(clipLimit_range, (list, tuple)) and len(clipLimit_range) == 2:
+            self.clip_min = float(clipLimit_range[0])
+            self.clip_max = float(clipLimit_range[1])
+        else:
+            raise ValueError('clipLimit_range must be (min, max)')
+
+        # normalize tileGridSize_range to ((min_h,min_w),(max_h,max_w))
+        if isinstance(tileGridSize_range, (list, tuple)) and len(tileGridSize_range) == 2:
+            a, b = tileGridSize_range
+            # if provided as (min_val, max_val) -> make square ranges
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                self.tg_min = (int(a), int(a))
+                self.tg_max = (int(b), int(b))
+            else:
+                # assume a and b are iterables of two ints
+                self.tg_min = (int(a[0]), int(a[1]))
+                self.tg_max = (int(b[0]), int(b[1]))
+        else:
+            raise ValueError('tileGridSize_range must be ((min_h,min_w),(max_h,max_w)) or (min_val,max_val)')
+
+    def _sample_params(self):
+        clip = random.uniform(self.clip_min, self.clip_max)
+        # sample tile grid size integers between min and max (inclusive)
+        th = random.randint(self.tg_min[0], max(self.tg_min[0], self.tg_max[0]))
+        tw = random.randint(self.tg_min[1], max(self.tg_min[1], self.tg_max[1]))
+        # ensure at least 1
+        th = max(1, th)
+        tw = max(1, tw)
+        return clip, (th, tw)
+
+    def __call__(self, img_or_sample):
+        is_dict = isinstance(img_or_sample, dict)
+        img = img_or_sample['image'] if is_dict else img_or_sample
+
+        if random.random() >= self.p:
+            return img_or_sample if is_dict else img
+
+        # sample params per-call
+        clip, tile = self._sample_params()
+
+        try:
+            arr = np.array(img)
+            if arr.ndim == 2 or (arr.ndim == 3 and arr.shape[2] == 1):
+                gray = arr if arr.ndim == 2 else arr[:, :, 0]
+                clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=tile)
+                out = clahe.apply(gray.astype(np.uint8))
+                out_img = Image.fromarray(out.astype(np.uint8))
+            elif arr.ndim == 3 and arr.shape[2] == 3:
+                try:
+                    lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+                    l, a, b = cv2.split(lab)
+                    clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=tile)
+                    l2 = clahe.apply(l.astype(np.uint8))
+                    lab2 = cv2.merge([l2, a, b])
+                    out = cv2.cvtColor(lab2, cv2.COLOR_LAB2RGB)
+                    out_img = Image.fromarray(out.astype(np.uint8))
+                except Exception:
+                    out = np.zeros_like(arr)
+                    clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=tile)
+                    for c in range(3):
+                        out[:, :, c] = clahe.apply(arr[:, :, c].astype(np.uint8))
+                    out_img = Image.fromarray(out.astype(np.uint8))
+            else:
+                out_img = img
+        except Exception:
+            out_img = img
+
+        if is_dict:
+            img_or_sample['image'] = out_img
+            return img_or_sample
+        else:
+            return out_img
+
+
 class Brightness():# new defined
     def __init__(self, min_v, max_v):
         self.min_v = min_v
@@ -256,58 +410,6 @@ class elastic_transform():
             sample['label'] = transformed_label
         return sample
 
-class cutout():
-
-    def __init__(self):
-        self.p=0.5
-        self.size_min=0.02
-        self.size_max=0.4
-        self.ratio_1=0.3
-        self.ratio_2=1/0.3
-        self.value_min=0
-        self.value_max=255
-        self.pixel_level=True
-
-    def __call__(self, sample):
-        if random.random() < self.p:
-            img, mask = sample['image'], sample['label']
-            img = np.array(img)
-            mask = np.array(mask)
-
-            img_h, img_w = img.shape[0], img.shape[1]
-            img_channel = len(img.shape)
-
-            while True:
-                size = np.random.uniform(self.size_min, self.size_max) * img_h * img_w
-                ratio = np.random.uniform(self.ratio_1, self.ratio_2)
-                erase_w = int(np.sqrt(size / ratio))
-                erase_h = int(np.sqrt(size * ratio))
-                x = np.random.randint(0, img_w)
-                y = np.random.randint(0, img_h)
-
-                if x + erase_w <= img_w and y + erase_h <= img_h:
-                    break
-
-            if self.pixel_level:
-                if img_channel == 3:
-                    value = np.random.uniform(self.value_min, self.value_max, (erase_h, erase_w, img.shape[2]))
-                elif img_channel == 2:
-                    value = np.random.uniform(self.value_min, self.value_max, (erase_h, erase_w)) 
-            else:
-                value = np.random.uniform(self.value_min, self.value_max)
-
-            img[y:y + erase_h, x:x + erase_w] = value
-            mask[y:y + erase_h, x:x + erase_w] = 255
-
-            # img = Image.fromarray(img.astype(np.uint8))
-            # mask = Image.fromarray(mask.astype(np.uint8))
-            sample['image'] = Image.fromarray(img.astype(np.uint8))
-            sample['label'] = mask
-
-        return sample
-
-
-
 
 class RandomCrop(object):
     def __init__(self, size, padding=0):
@@ -324,7 +426,9 @@ class RandomCrop(object):
         if self.padding > 0 or w < self.size[0] or h < self.size[1]:
             padding = np.maximum(self.padding,np.maximum((self.size[0]-w)//2+5,(self.size[1]-h)//2+5))
             img = ImageOps.expand(img, border=padding, fill=0)
-            mask = ImageOps.expand(mask, border=padding, fill=255)
+            # Use 0 as mask padding value (background) to avoid inserting 255 which
+            # previously represented background in some datasets and caused label confusion.
+            mask = ImageOps.expand(mask, border=padding, fill=0)
 
         assert img.width == mask.width
         assert img.height == mask.height
@@ -420,6 +524,7 @@ class FixedResize(object):
                 'img_name': name}
 
 
+
 class Scale(object):
     def __init__(self, size):
         if isinstance(size, numbers.Number):
@@ -491,9 +596,12 @@ class RandomSizedCrop(object):
 
 
 class RandomRotate(object):
-    def __init__(self, size=512):
+    def __init__(self, size=512, fillcolor=0, img_fillcolor=None):
         self.degree = random.randint(1, 4) * 90
         self.size = size
+        self.fillcolor = fillcolor  # fillcolor for mask
+        # For image rotation, default to 0 (black background) if not specified
+        self.img_fillcolor = img_fillcolor if img_fillcolor is not None else 0
 
     def __call__(self, sample):
         img = sample['image']
@@ -502,18 +610,22 @@ class RandomRotate(object):
         seed = random.random()
         if seed > 0.5:
             rotate_degree = self.degree
-            img = img.rotate(rotate_degree, Image.BILINEAR, expand=0)
-            mask = mask.rotate(rotate_degree, Image.NEAREST, expand=255)
+            # Fixed: use fillcolor instead of expand for filling rotated areas
+            img = img.rotate(rotate_degree, Image.BILINEAR, fillcolor=self.img_fillcolor)
+            mask = mask.rotate(rotate_degree, Image.NEAREST, fillcolor=self.fillcolor)
             sample['image'] = img
             sample['label'] = mask
         return sample
 
 class RandomScaleRotate(object):
-    def __init__(self, size=512, left=-20, right=20, fillcolor=255):
+    def __init__(self, size=512, left=-20, right=20, fillcolor=0, img_fillcolor=None):
         self.size = size
         self.left = left
         self.right = right
-        self.fillcolor = fillcolor
+        self.fillcolor = fillcolor  # fillcolor for mask
+        # For image rotation, default to 0 (black background) if not specified
+        # Medical images typically have black backgrounds
+        self.img_fillcolor = img_fillcolor if img_fillcolor is not None else 0
 
     def __call__(self, sample):
         img = sample['image']
@@ -522,7 +634,9 @@ class RandomScaleRotate(object):
         seed = random.random()
         if seed > 0.5:
             rotate_degree = random.randint(self.left, self.right)
-            img = img.rotate(rotate_degree, Image.BILINEAR)
+            # Rotate image with explicit fillcolor (black for medical images)
+            img = img.rotate(rotate_degree, Image.BILINEAR, fillcolor=self.img_fillcolor)
+            # Rotate mask with dataset-specific fillcolor (background value)
             mask = mask.rotate(rotate_degree, Image.NEAREST, fillcolor=self.fillcolor)
 
             sample['image'] = img
@@ -589,24 +703,6 @@ class Resize(object):
         sample = {'image': img, 'label': mask, 'img_name': name}
         return sample
 
-
-# class RandomScale(object):
-#     def __init__(self, limit):
-#         self.limit = limit
-#
-#     def __call__(self, sample):
-#         img = sample['image']
-#         mask = sample['label']
-#         assert img.width == mask.width
-#         assert img.height == mask.height
-#
-#         scale = random.uniform(self.limit[0], self.limit[1])
-#         w = int(scale * img.size[0])
-#         h = int(scale * img.size[1])
-#
-#         img, mask = img.resize((w, h), Image.BILINEAR), mask.resize((w, h), Image.NEAREST)
-#
-#         return {'image': img, 'label': mask, 'img_name': sample['img_name']}
 
 
 class Normalize(object):
@@ -786,3 +882,190 @@ class ToTensor(object):
         # domain_code = torch.from_numpy(SoftLable(ToMultiLabel(sample['dc']))).float()
         # sample['dc'] = domain_code
         return sample
+    
+
+class RandomPatchSamplerWithClass(object):
+    """
+    扩展版的随机 patch 采样器，支持一次采样多个 patch 并返回对应的二分类标签（是否包含前景）。
+
+        行为：
+        - 该变换应当在 Compose 之前直接被 dataset 调用（不要放入 Compose）。
+        - 每次调用返回多个 patch，并把结果写回 `sample`：
+                - 'patches'：list of PIL.Image，已被缩放到原图大小（w,h）。
+                - 'patch_masks'：list of PIL.Image（二值或标签掩码），对应每个 patch 的裁剪 mask 并缩放到原图大小（w,h），插值使用 NEAREST。
+                - 'patch_labels'：list of int（0/1），表示该 patch 是否包含前景。
+            不再修改 `sample['image']` 或 `sample['label']`（不兼容旧 API）。
+
+    参数说明：
+    :param num_patches: 每次返回的 patch 数量（int），例如 4
+    :param num_fg: 每次必须返回的前景 patch 个数（int），例如 2
+    :param min_ratio: patch 的最小长/宽比例（float in (0,1]），例如 0.5 表示裁剪框的宽和高至少为原图相应维度的 50%
+    :param fg_threshold: 判定前景的阈值（比例），patch 中前景像素比例 > fg_threshold 即视为包含前景
+    :param num_attempts: 单个目标标签寻找的最大尝试次数
+    :param fg_func: 自定义前景判断函数 func(mask_np) -> binary_mask,默认为 (mask_np > 0)
+                    用于支持特殊情况如 Prostate (0=前景,需要 mask_np==0)
+    """
+    def __init__(self,
+                 num_patches=4,
+                 num_fg=2,
+                 min_ratio=0.5,
+                 fg_threshold=0.01,
+                 num_attempts=50,
+                 return_coords=False,
+                 fg_func=None):
+        self.num_patches = int(num_patches)
+        self.num_fg = int(num_fg)
+        if self.num_fg > self.num_patches:
+            raise ValueError('num_fg must be <= num_patches')
+        self.min_ratio = float(min_ratio)
+        assert 0.0 < self.min_ratio <= 1.0
+        self.fg_threshold = float(fg_threshold)
+        self.num_attempts = int(num_attempts)
+        self.return_coords = bool(return_coords)
+        self.fg_func = fg_func if fg_func is not None else (lambda m: m > 0)
+
+    def __call__(self, sample):
+        img = sample['image']
+        mask = sample['label']
+
+        # 转为 numpy mask（灰度）
+        if not isinstance(mask, np.ndarray):
+            mask_np = np.array(mask.convert('L'))
+        else:
+            mask_np = mask
+
+        w, h = img.size
+
+        # 最小裁剪尺寸（整数像素）
+        min_w = max(1, int(round(self.min_ratio * w)))
+        min_h = max(1, int(round(self.min_ratio * h)))
+
+        patches = []
+        labels = []
+        masks = []
+        patch_coords = []
+
+        # 预计算二值前景 mask 与积分图，便于快速计算任意窗口内前景像素数量
+        # 使用自定义前景判断函数(支持 Prostate 的 0=前景情况)
+        mask_bin = self.fg_func(mask_np).astype(np.uint8)
+        # integral image: integral[y, x] = sum over mask_bin[:y+1, :x+1]
+        integral = mask_bin.cumsum(axis=0).cumsum(axis=1)
+        total_fg = float(integral[-1, -1])
+
+        # 固定第一个采样为整张图（原始大小），并把它计入前景统计
+        full_fg_count = int(total_fg)
+        is_full_foreground = (full_fg_count > (w * h * self.fg_threshold))
+        # append full image as the first patch
+        try:
+            full_mask_pil = Image.fromarray(mask_np.astype(np.uint8))
+        except Exception:
+            full_mask_pil = Image.fromarray(np.asarray(mask_np, dtype=np.uint8))
+        patches.append(img if isinstance(img, Image.Image) else Image.fromarray(np.array(img)))
+        masks.append(full_mask_pil)
+        labels.append(1 if is_full_foreground else 0)
+        patch_coords.append((0, 0, int(w), int(h)))
+
+        # 构造剩余的目标标签队列（去掉已经固定的第一个），并打乱顺序
+        remaining_patches = max(0, self.num_patches - 1)
+        # 如果第一个整图已被判断为前景，则需要的前景数量减一
+        remaining_needed_fg = max(0, self.num_fg - (1 if is_full_foreground else 0))
+        targets = [1] * remaining_needed_fg + [0] * (remaining_patches - remaining_needed_fg)
+        random.shuffle(targets)
+
+        def area_sum(x, y, ww, hh):
+            # x,y are left,top; ww,hh are width/height
+            x2 = x + ww - 1
+            y2 = y + hh - 1
+            if x2 < 0 or y2 < 0:
+                return 0
+            s = integral[y2, x2]
+            if x > 0:
+                s -= integral[y2, x - 1]
+            if y > 0:
+                s -= integral[y - 1, x2]
+            if x > 0 and y > 0:
+                s += integral[y - 1, x - 1]
+            return s
+
+        for target_label in targets:
+            # 每个目标尝试多次采样；对于 background (0) 我们会在候选中选最小前景比例的
+            best_candidate = None
+            best_fg_prop = 1.0
+            last_crop = None
+            for _ in range(self.num_attempts):
+                # 随机采样裁剪尺寸（在 [min_w, w] 和 [min_h, h] 之间）
+                cw = random.randint(min_w, w)
+                ch = random.randint(min_h, h)
+                # 随机左上角
+                if w - cw <= 0:
+                    x1 = 0
+                else:
+                    x1 = random.randint(0, w - cw)
+                if h - ch <= 0:
+                    y1 = 0
+                else:
+                    y1 = random.randint(0, h - ch)
+
+                fg_count = area_sum(x1, y1, cw, ch)
+                is_foreground = (fg_count > (cw * ch * self.fg_threshold))
+                last_crop = (x1, y1, cw, ch, is_foreground)
+
+                # 如果目标为前景，优先接受第一个满足阈值的裁剪
+                if target_label == 1:
+                    if is_foreground:
+                        best_candidate = (x1, y1, cw, ch, is_foreground)
+                        break
+                else:
+                    # 目标为背景：记录前景比例最小的候选
+                    fg_prop = fg_count / float(max(1, cw * ch))
+                    if fg_prop < best_fg_prop:
+                        best_fg_prop = fg_prop
+                        best_candidate = (x1, y1, cw, ch, is_foreground)
+                        # 在完全无前景的候选时可以提前退出
+                        if fg_prop <= 0.0:
+                            break
+
+            # 选择最终裁剪：前景优先选中满足阈值的裁剪；背景选最低前景比例候选；若均无则退回最后一次尝试
+            if best_candidate is None and last_crop is None:
+                # 兜底：整图
+                x1, y1, cw, ch = 0, 0, w, h
+                is_foreground = (np.sum(mask_np > 0) > (w * h * self.fg_threshold))
+            elif best_candidate is None:
+                x1, y1, cw, ch, is_foreground = last_crop
+            else:
+                x1, y1, cw, ch, is_foreground = best_candidate
+
+            # 裁剪并缩放到原图大小以兼容后续变换
+            cropped = img.crop((x1, y1, x1 + cw, y1 + ch))
+            if (cw, ch) != (w, h):
+                cropped = cropped.resize((w, h), Image.BILINEAR)
+
+            patches.append(cropped)
+            # 返回的标签以实际是否含前景为准（优先保证 target 条件，但在失败时可能不一致）
+            labels.append(1 if is_foreground else 0)
+
+            # 同时裁剪并保存 mask（PIL），最近邻重采样以保留标签值
+            mask_patch_np = mask_np[y1:y1+ch, x1:x1+cw]
+            try:
+                mask_pil = Image.fromarray(mask_patch_np.astype(np.uint8))
+            except Exception:
+                mask_pil = Image.fromarray(np.asarray(mask_patch_np, dtype=np.uint8))
+            if (cw, ch) != (w, h):
+                mask_pil = mask_pil.resize((w, h), Image.NEAREST)
+            masks.append(mask_pil)
+
+            # 记录裁剪坐标（相对于原始 resize 后的图像尺寸）
+            patch_coords.append((int(x1), int(y1), int(cw), int(ch)))
+
+        # 将裁剪结果写回 sample
+        sample['patches'] = patches
+        sample['patch_masks'] = masks if masks else [Image.fromarray(np.zeros((h, w), dtype=np.uint8)) for _ in range(len(patches))]
+        sample['patch_labels'] = labels
+        if getattr(self, 'return_coords', False):
+            sample['patch_coords'] = patch_coords
+
+        return sample
+    
+
+
+

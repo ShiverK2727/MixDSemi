@@ -54,6 +54,7 @@ parser.add_argument('--amp', type=int, default=1,
                     help='Use mixed precision training (1: enabled, 0: disabled)')
 
 # ==================== Data Configuration ====================
+# (数据配置参数保持不变)
 parser.add_argument("--label_bs", type=int, default=None,
                     help="Labeled batch size per GPU (auto-set based on lb_num if None)")
 parser.add_argument("--unlabel_bs", type=int, default=None,
@@ -68,8 +69,9 @@ parser.add_argument('--lb_ratio', type=float, default=0,
                     help='Labeled data ratio of total dataset (overrides lb_num if > 0)')
 
 # ==================== Preprocessing ====================
+# (预处理参数保持不变 - 'preprocess_dir' 现在不由 L_llm 使用)
 parser.add_argument('--preprocess_dir', type=str, default=None,
-                    help='Override preprocessing directory for score tensors')
+                    help='Override preprocessing directory (if dataloader uses it)')
 parser.add_argument('--llm_model', type=str, default='gemini',
                     choices=['gemini', 'GPT5', 'DeepSeek'],
                     help='LLM model used to generate score tensors')
@@ -78,6 +80,7 @@ parser.add_argument('--describe_nums', type=int, default=40,
                     help='Number of textual descriptions for preprocessing')
 
 # ==================== VPT + TPT Configuration ====================
+# (VPT/TPT 配置保持不变)
 parser.add_argument('--biomedclip_path', type=str, default='/root/models/BiomedCLIP',
                     help='Root directory containing BiomedCLIP weights and config JSON')
 parser.add_argument('--visual_num_prompts', type=int, default=4,
@@ -95,19 +98,20 @@ parser.add_argument('--freeze_backbone', action='store_true', default=True,
 parser.add_argument('--text_root', type=str, default='/app/MixDSemi/SynFoCLIP/code/text',
                     help='Directory containing dataset text description JSON files')
 
-# ==================== (新) Loss 权重 ====================
+# ==================== (新) Loss 权重 (EMA + SCCM) ====================
 parser.add_argument('--lambda_sup', type=float, default=1.0,
                     help='Weight for supervised loss (L_sup)')
 parser.add_argument('--lambda_consis', type=float, default=1.0,
                     help='Weight for *all* consistency losses (Map + Feat)')
-parser.add_argument('--lambda_llm', type=float, default=1.0,
-                    help='Weight for LLM knowledge distillation loss (L_llm)')
+parser.add_argument('--lambda_sccm', type=float, default=0.1,
+                    help='(新) Weight for SCCM text alignment loss (L_sccm)')
 parser.add_argument('--feat_consis_scale', type=float, default=0.1,
                     help='Scaling factor for patch feature consistency loss (relative to map consistency)')
 parser.add_argument('--T_consis', type=float, default=0.5,
                     help='Temperature for sharpening pseudo-labels in consistency loss')
-parser.add_argument('--T_llm', type=float, default=1.0,
-                    help='Temperature for sharpening LLM score_tensor labels')
+# (移除了 T_llm 和 lambda_llm)
+parser.add_argument('--ema_decay', type=float, default=0.999, 
+                    help='EMA decay rate for the teacher model')
 
 
 args = parser.parse_args()
@@ -155,6 +159,8 @@ def train(args, snapshot_path):
         lb_num = args.lb_num
     lb_idxs = list(range(lb_num))
     unlabeled_idxs = list(range(lb_num, data_num))
+    
+    # (新) 修改 kwargs，不再强制要求 return_score=True
     lb_kwargs = dict(
         base_dir=train_data_path,
         phase='train',
@@ -164,11 +170,12 @@ def train(args, snapshot_path):
         weak_transform=weak,
         normal_toTensor=normal_toTensor,
         img_size=patch_size,
+        # (如果 dataloader_dc.py 需要这些参数，请保留)
         preprocess_dir=dataset_preprocess_dir,
         llm_model=args.llm_model,
         describe_nums=args.describe_nums,
-        return_score=True, # 确保返回 score_tensor
-        allow_missing_scores=False,
+        # return_score=True, # 移除
+        # allow_missing_scores=False, # 移除
     )
     ulb_kwargs = dict(
         base_dir=train_data_path,
@@ -183,14 +190,23 @@ def train(args, snapshot_path):
         preprocess_dir=dataset_preprocess_dir,
         llm_model=args.llm_model,
         describe_nums=args.describe_nums,
-        return_score=True, # 确保返回 score_tensor
-        allow_missing_scores=False,
+        # return_score=True, # 移除
+        # allow_missing_scores=False, # 移除
     )
-    lb_dataset = dataset(**lb_kwargs)
-    ulb_dataset = dataset(**ulb_kwargs)
+    # 尝试加载数据集，如果 Dataloader 不接受 'preprocess_dir' 等参数，会报错
+    try:
+        lb_dataset = dataset(**lb_kwargs)
+        ulb_dataset = dataset(**ulb_kwargs)
+    except TypeError as e:
+        logging.warning(f"Dataloader 初始化失败: {e}")
+        logging.warning("Dataloader 可能不支持 'preprocess_dir' 或 'llm_model' 等参数。")
+        # (如果确认 Dataloader 不需要这些，可以从 kwargs 中移除它们)
+        # (此处假设 Dataloader 会忽略它们)
+        pass
+
 
     # --- Text sampling ---
-    # (这部分现在主要用于 `class_text` 的预编码，仍然是必要的)
+    # (这部分现在用于 L_sccm 教师 和 L_sup 学生)
     text_dataset_key = TEXT_DATASET_DEFAULTS.get(args.dataset)
     text_sampler = TextSampler(args.text_root)
     per_class_lists, flat_list = text_sampler.load_texts(
@@ -201,14 +217,15 @@ def train(args, snapshot_path):
     logging.info(
         "TextSampler loaded dataset '%s' (num_classes=%d, total_texts=%d)",
         text_dataset_key,
-        len(per_class_lists),
+        len(per_class_lists), # K-1 (前景类)
         len(flat_list),
     )
 
-    # --- 实例化 VPT+TPT 分割模型 ---
+    # --- (新) 实例化 Student 和 EMA Teacher 模型 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    vpt_tpt_model, preprocess, tokenizer = build_vpt_tpt_seg_model(
+    logging.info("--- Initializing Student Model ---")
+    model_student, preprocess, tokenizer = build_vpt_tpt_seg_model(
         model_path=args.biomedclip_path,
         device=str(device),
         visual_num_prompts=args.visual_num_prompts,
@@ -216,23 +233,46 @@ def train(args, snapshot_path):
         freeze_backbone=args.freeze_backbone,
     )
     
-    # 收集所有可训练参数（VPT + TPT）
-    trainable_params = []
-    trainable_params.extend(vpt_tpt_model.visual_prompt_learner.parameters())
-    trainable_params.extend(vpt_tpt_model.text_prompt_learner.parameters())
-    trainable_params = [p for p in trainable_params if p.requires_grad]
+    logging.info("--- Initializing EMA Teacher Model ---")
+    model_teacher, _, _ = build_vpt_tpt_seg_model(
+        model_path=args.biomedclip_path,
+        device=str(device),
+        visual_num_prompts=args.visual_num_prompts,
+        text_num_prompts=args.text_num_prompts,
+        freeze_backbone=args.freeze_backbone,
+    )
+
+    # 冻结 Teacher 模型，并从 Student 复制初始权重
+    for param_teacher in model_teacher.parameters():
+        param_teacher.requires_grad = False
+    
+    # 仅复制可训练的 prompt 权重
+    model_teacher.visual_prompt_learner.load_from_state_dict(
+        model_student.visual_prompt_learner.state_dict_for_save()
+    )
+    model_teacher.text_prompt_learner.load_from_state_dict(
+        model_student.text_prompt_learner.state_dict_for_save()
+    )
+    
+    # --- (新) 优化器只针对 Student 模型 ---
+    trainable_params_student = []
+    trainable_params_student.extend(model_student.visual_prompt_learner.parameters())
+    trainable_params_student.extend(model_student.text_prompt_learner.parameters())
+    trainable_params_student = [p for p in trainable_params_student if p.requires_grad]
     
     optimizer = optim.AdamW(
-        trainable_params,
+        trainable_params_student,
         lr=args.vpt_tpt_lr,
         weight_decay=args.vpt_tpt_weight_decay,
     )
     
     logging.info(
-        "VPT+TPT model initialized on %s (trainable params=%d)",
+        "Student VPT+TPT model initialized on %s (trainable params=%d)",
         device,
-        sum(p.numel() for p in trainable_params),
+        sum(p.numel() for p in trainable_params_student),
     )
+    logging.info("Teacher VPT+TPT model initialized (frozen).")
+
 
     # ... (DataLoader 逻辑保持不变) ...
     lb_loader = DataLoader(lb_dataset, batch_size=args.label_bs, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
@@ -244,13 +284,13 @@ def train(args, snapshot_path):
     logging.info(f"Total iterations: {max_iterations}")
     
     logging.info(
-        "CLIP loss weights: L_sup=%.3f, L_consis=%.3f (feat_scale=%.3f, T_consis=%.2f), L_llm=%.3f (T_llm=%.2f)",
+        "CLIP loss weights: L_sup=%.3f, L_consis=%.3f (feat_scale=%.3f, T_consis=%.2f), L_sccm=%.3f, EMA_decay=%.4f",
         args.lambda_sup,
         args.lambda_consis,
         args.feat_consis_scale,
         args.T_consis,
-        args.lambda_llm,
-        args.T_llm
+        args.lambda_sccm, # (新)
+        args.ema_decay
     )
     
     # ... (AMP 逻辑保持不变) ...
@@ -259,34 +299,82 @@ def train(args, snapshot_path):
     amp_cm = autocast if amp_enabled else contextlib.nullcontext
     logging.info(f"AMP (Mixed Precision) enabled: {amp_enabled}")
 
-    # --- 预编码类别文本特征 (保持不变) ---
-    # 这部分用于生成 W_robust (Student)
-    logging.info("Pre-encoding class text features for K=%d classes...", len(args.class_text))
-    class_text_features_list = []
+    # --- (新) 预编码 L_SCCM 的 LLM 教师原型 (P_g) ---
+    # P_g 是使用 *原始* LLM 描述（来自 per_class_lists）
+    # 和 *原始* 冻结文本编码器（无 TPT）计算的
+    
+    logging.info("Pre-encoding LLM Teacher Prototypes (P_g for L_sccm)...")
+    K_classes = num_classes + 1
+    if len(args.class_text) != K_classes:
+        logging.error(f"args.class_text 长度 ({len(args.class_text)}) 与 num_classes+1 ({K_classes}) 不匹配。")
+        raise ValueError("class_text 和 num_classes 配置错误")
+    if len(per_class_lists) != num_classes:
+         logging.error(f"per_class_lists 长度 ({len(per_class_lists)}) 与 num_classes ({num_classes}) 不匹配。")
+         raise ValueError("text_sampler 加载的类别数与 num_classes 配置错误")
+
+    llm_teacher_prototypes_list = []
+    # 切换到 eval 模式以关闭 dropout (如果存在)
+    original_clip_model = model_student.model.eval()
+    
     with torch.no_grad():
-        for i, class_name in enumerate(args.class_text):
+        for i in range(K_classes):
+            class_name = args.class_text[i]
+            
             if i == 0:
+                # 背景类：使用类名本身
                 texts_for_class = [class_name]
             else:
-                if i - 1 < len(per_class_lists):
-                    texts_for_class = per_class_lists[i - 1]
-                else:
-                    logging.warning(f"per_class_lists 索引 {i-1} 越界，使用类名 '{class_name}'")
-                    texts_for_class = [class_name]
+                # 前景类：使用 per_class_lists 中对应的文本（索引 i-1）
+                texts_for_class = per_class_lists[i - 1]
             
-            W_class = vpt_tpt_model.encode_text_with_prompts(texts_for_class)  # [len(texts), D]
-            W_class_mean = W_class.mean(dim=0, keepdim=True)  # [1, D]
-            class_text_features_list.append(W_class_mean)
+            # (新) 使用 *原始* 冻结编码器
+            # 1. Tokenize
+            tokens = tokenizer(texts_for_class).to(device)
+            # 2. Encode
+            # model_student.model 是冻结的原始 BiomedCLIP
+            text_features = original_clip_model.encode_text(tokens) # [N_texts, D]
+            
+            # 3. Average
+            text_features_mean = text_features.mean(dim=0, keepdim=True)  # [1, D]
+            llm_teacher_prototypes_list.append(text_features_mean)
         
-        class_text_features = torch.cat(class_text_features_list, dim=0)  # [K, D]
-        class_text_features = F.normalize(class_text_features, dim=-1)
+        # (新) P_g (LLM Teacher Prototypes)
+        llm_teacher_prototypes_Pg = torch.cat(llm_teacher_prototypes_list, dim=0)  # [K, D]
+        llm_teacher_prototypes_Pg = F.normalize(llm_teacher_prototypes_Pg, dim=-1)
     
-    logging.info(f"Pre-encoded class_text_features: {class_text_features.shape}")
+    logging.info(f"Pre-encoded llm_teacher_prototypes_Pg: {llm_teacher_prototypes_Pg.shape}")
+    
+    # 确保 Student 模型回到训练模式（尽管只有 prompts 在训练）
+    model_student.train()
+
+
+    # --- (新) EMA 更新辅助函数 ---
+    @torch.no_grad()
+    def update_ema_variables(student_model, teacher_model, alpha):
+        """
+        使用 EMA 更新 Teacher 模型的 *可训练* 参数 (prompts)。
+        alpha 是 EMA 的 decay rate (动量)。
+        """
+        # 更新 Visual Prompts
+        for (name_stud, param_stud), (name_teach, param_teach) in zip(
+            student_model.visual_prompt_learner.named_parameters(),
+            teacher_model.visual_prompt_learner.named_parameters()
+        ):
+            param_teach.data.mul_(alpha).add_(param_stud.data, alpha=1 - alpha)
+
+        # 更新 Text Prompts
+        for (name_stud, param_stud), (name_teach, param_teach) in zip(
+            student_model.text_prompt_learner.named_parameters(),
+            teacher_model.text_prompt_learner.named_parameters()
+        ):
+            param_teach.data.mul_(alpha).add_(param_stud.data, alpha=1 - alpha)
+
     
     # --- Main training loop (VPT+TPT) ---
-    p_bar = tqdm(range(1, max_iterations + 1), desc=f'VPT+TPT Training')
+    p_bar = tqdm(range(1, max_iterations + 1), desc=f'VPT+TPT (EMA+SCCM) Training')
     
-    vpt_tpt_model.train()
+    model_student.train()
+    model_teacher.eval() # Teacher 始终处于评估模式
 
     for iter_num in p_bar:
         # 1. 加载数据
@@ -296,9 +384,7 @@ def train(args, snapshot_path):
         lb_unet_size_x_w = lb_sample['unet_size_img'].cuda()
         ulb_unet_size_x_w, ulb_unet_size_x_s = ulb_sample['unet_size_img'].cuda(), ulb_sample['unet_size_strong_aug'].cuda()
         
-        # (新) 加载 LLM score_tensor
-        lb_score_tensor = lb_sample['score_tensor'].cuda()
-        ulb_score_tensor = ulb_sample['score_tensor'].cuda()
+        # (移除了 score_tensor 加载)
         
         # 2. 处理有标签数据 (GT Label)
         if 'unet_size_label' in lb_sample:
@@ -308,15 +394,45 @@ def train(args, snapshot_path):
                     lb_unet_size_label = lb_unet_size_label.squeeze(1)
             else:
                 lb_unet_size_label = torch.as_tensor(lb_unet_size_label)
-            lb_unet_size_label = lb_unet_size_label.long().cuda()
+            # ===== 根据数据集类型重映射标签（参考 train_synfoc.py）=====
+            # Prostate: 原始 mask 中 0=前景，需要映射为 mask.eq(0) -> 1 (foreground)
+            if args.dataset == 'prostate':
+                lb_unet_size_mask = lb_unet_size_label.eq(0).long().cuda()
+            elif args.dataset == 'BUSI':
+                lb_unet_size_mask = lb_unet_size_label.eq(255).long().cuda()
+            elif args.dataset == 'MNMS':
+                lb_unet_size_mask = lb_unet_size_label.long().cuda()
+            elif args.dataset == 'fundus':
+                lb_unet_size_mask = (lb_unet_size_label <= 128).long().cuda() * 2
+                lb_unet_size_mask[lb_unet_size_label == 0] = 1
+            else:
+                lb_unet_size_mask = lb_unet_size_label.long().cuda()
 
-            B_lb, H, W = lb_unet_size_label.shape
+            B_lb, H, W = lb_unet_size_mask.shape
             K_classes = num_classes + 1  # background + n foreground classes
 
+            # ===== 验证标签映射 =====
+            if iter_num % 500 == 1:
+                unique_labels_orig = torch.unique(lb_unet_size_label).cpu().tolist()
+                unique_labels_mapped = torch.unique(lb_unet_size_mask).cpu().tolist()
+                # 额外打印原始像素值到映射索引的映射（便于审计）
+                raw_to_mapped = {}
+                for raw in unique_labels_orig:
+                    # 找到原始标签等于 raw 的位置，获取对应映射值（因为映射是逐像素的，取第一个即可）
+                    mask_positions = (lb_unet_size_label == raw)
+                    if mask_positions.any():
+                        mapped_val = lb_unet_size_mask[mask_positions][0].item()
+                    else:
+                        mapped_val = None
+                    raw_to_mapped[int(raw)] = int(mapped_val) if mapped_val is not None else None
+
+                logging.info(f"iter {iter_num}: Label mapping - Original unique values: {unique_labels_orig} -> Mapped unique: {unique_labels_mapped}")
+                logging.info(f"iter {iter_num}: Raw->Mapped sample mapping: {raw_to_mapped}")
+
             # 构建 one-hot (B_lb, K, H, W)
-            one_hot = torch.zeros((B_lb, K_classes, H, W), dtype=torch.float32, device=lb_unet_size_label.device)
+            one_hot = torch.zeros((B_lb, K_classes, H, W), dtype=torch.float32, device=lb_unet_size_mask.device)
             for c in range(K_classes):
-                one_hot[:, c, :, :] = (lb_unet_size_label == c).float()
+                one_hot[:, c, :, :] = (lb_unet_size_mask == c).float()
 
             # 下采样到 14x14
             lb_label_14 = F.adaptive_avg_pool2d(one_hot, (14, 14))
@@ -330,39 +446,36 @@ def train(args, snapshot_path):
         N_patches_flat = 196
         N_patches_side = 14
 
-        # 4. VPT+TPT 前向过程
+        # 4. (新) VPT+TPT (EMA) 前向过程
         with amp_cm():
             from biomedclip_vpt_tpt_seg import preprocess_tensor_images
             
-            # 组合 Labeled 和 Unlabeled 图像以提高效率
-            # (注意：强增强只在 ulb 上有)
-            images_weak = torch.cat([lb_unet_size_x_w, ulb_unet_size_x_w], dim=0)
-            images_weak_preprocessed = preprocess_tensor_images(images_weak, preprocess, str(device))
+            # === Student 前向 (接收梯度) ===
+            # (注意: L_sccm 只需要 lb_outputs['W_robust'])
             
-            # 弱增强前向
-            weak_outputs = vpt_tpt_model(images_weak_preprocessed, args.class_text)
+            # 1. Labeled (weak aug) -> L_sup 和 L_sccm
+            lb_images_preprocessed = preprocess_tensor_images(lb_unet_size_x_w, preprocess, str(device))
+            lb_outputs = model_student(lb_images_preprocessed, args.class_text)
             
-            # 分离 Labeled 和 Unlabeled 的弱增强输出
-            lb_outputs = {}
-            ulb_weak_outputs = {}
-            lb_outputs["H_semantic_maps"] = weak_outputs["H_semantic_maps"][:B_lb]
-            lb_outputs["patch_features"] = weak_outputs["patch_features"][:B_lb]
-            ulb_weak_outputs["H_semantic_maps"] = weak_outputs["H_semantic_maps"][B_lb:]
-            ulb_weak_outputs["patch_features"] = weak_outputs["patch_features"][B_lb:]
-            
-            # 强增强前向 (仅 Unlabeled)
+            # 2. Unlabeled (strong aug) -> L_consis
             ulb_images_strong_preprocessed = preprocess_tensor_images(ulb_unet_size_x_s, preprocess, str(device))
-            ulb_strong_outputs = vpt_tpt_model(ulb_images_strong_preprocessed, args.class_text)
+            ulb_strong_outputs = model_student(ulb_images_strong_preprocessed, args.class_text)
             
-            # ========== (新) Loss 计算 (v2) ==========
+            # === Teacher 前向 (不接收梯度) ===
+            with torch.no_grad():
+                # 3. Unlabeled (weak aug) -> L_consis 的伪标签
+                ulb_images_weak_preprocessed = preprocess_tensor_images(ulb_unet_size_x_w, preprocess, str(device))
+                ulb_weak_outputs = model_teacher(ulb_images_weak_preprocessed, args.class_text)
+            
+            # ========== (新) Loss 计算 (v3 / EMA + SCCM) ==========
             
             loss_total = torch.tensor(0.0, device=device)
             loss_sup = torch.tensor(0.0, device=device)
             loss_consis_map = torch.tensor(0.0, device=device)
             loss_consis_feat = torch.tensor(0.0, device=device)
-            loss_llm = torch.tensor(0.0, device=device)
+            loss_sccm = torch.tensor(0.0, device=device) # (新)
             
-            # 1. 监督损失 (L_sup) - [Labeled Data] Model vs GT_Label
+            # 1. 监督损失 (L_sup) - [Labeled Data] Student(Weak) vs GT_Label
             if 'unet_label_14' in lb_sample and args.lambda_sup > 0:
                 lb_pred_maps = lb_outputs["H_semantic_maps"].view(B_lb, K_classes, N_patches_side, N_patches_side)
                 lb_gt_maps = lb_sample['unet_label_14']
@@ -371,50 +484,41 @@ def train(args, snapshot_path):
                 loss_sup = F.kl_div(log_pred, lb_gt_maps, reduction='batchmean')
                 loss_total += args.lambda_sup * loss_sup
             
-            # 2. 一致性损失 (L_consis) - [Unlabeled Data] Model_Strong vs Model_Weak
+            # 2. 一致性损失 (L_consis) - [Unlabeled Data] Student(Strong) vs Teacher(Weak)
             if args.lambda_consis > 0:
                 # Map Consistency
+                # 教师伪标签 (来自 EMA Teacher)
                 ulb_weak_maps_logits = ulb_weak_outputs["H_semantic_maps"].view(B_ulb, K_classes, N_patches_side, N_patches_side)
                 with torch.no_grad():
                     pseudo_label_prob = F.softmax(ulb_weak_maps_logits / args.T_consis, dim=1)
                 
+                # 学生预测 (来自 Student)
                 ulb_strong_maps_logits = ulb_strong_outputs["H_semantic_maps"].view(B_ulb, K_classes, N_patches_side, N_patches_side)
                 ulb_strong_log_prob = F.log_softmax(ulb_strong_maps_logits, dim=1)
                 
                 loss_consis_map = F.kl_div(ulb_strong_log_prob, pseudo_label_prob, reduction='batchmean')
                 
                 # Feature Consistency
-                feat_weak = ulb_weak_outputs["patch_features"]
-                feat_strong = ulb_strong_outputs["patch_features"]
+                feat_weak = ulb_weak_outputs["patch_features"]  # [B_ulb, 196, D] (来自 EMA Teacher)
+                feat_strong = ulb_strong_outputs["patch_features"] # [B_ulb, 196, D] (来自 Student)
                 loss_consis_feat = F.mse_loss(feat_strong, feat_weak.detach())
                 
                 # 合并一致性损失
                 loss_consis_total = loss_consis_map + (args.feat_consis_scale * loss_consis_feat)
                 loss_total += args.lambda_consis * loss_consis_total
             
-            # 3. LLM 知识蒸馏损失 (L_llm) - [All Data] Model vs LLM_Score
-            if args.lambda_llm > 0:
-                # Labeled Data
-                lb_pred_maps_flat = lb_outputs["H_semantic_maps"] # [B_lb, K, 196]
-                lb_score_tensor_flat = lb_score_tensor.view(B_lb, K_classes, N_patches_flat) # [B_lb, K, 196]
+            # 3. (新) SCCM 纯文本对齐损失 (L_sccm) - [Labeled Data] Student_Proto vs LLM_Proto
+            if args.lambda_sccm > 0:
+                # 学生原型 W_robust (来自 Labeled Data 的前向，[K, D])
+                student_prototypes_W_robust = lb_outputs["W_robust"]
                 
-                with torch.no_grad():
-                    lb_llm_prob = F.softmax(lb_score_tensor_flat / args.T_llm, dim=1)
-                lb_pred_log_prob = F.log_softmax(lb_pred_maps_flat, dim=1)
-                loss_llm_lb = F.kl_div(lb_pred_log_prob, lb_llm_prob, reduction='batchmean')
-
-                # Unlabeled Data (使用强增强的预测作为 Student)
-                ulb_pred_maps_flat = ulb_strong_outputs["H_semantic_maps"] # [B_ulb, K, 196]
-                ulb_score_tensor_flat = ulb_score_tensor.view(B_ulb, K_classes, N_patches_flat) # [B_ulb, K, 196]
+                # 教师原型 P_g (来自预计算，[K, D])
+                teacher_prototypes_Pg = llm_teacher_prototypes_Pg.detach() # 确保 P_g 不计算梯度
                 
-                with torch.no_grad():
-                    ulb_llm_prob = F.softmax(ulb_score_tensor_flat / args.T_llm, dim=1)
-                ulb_pred_log_prob = F.log_softmax(ulb_pred_maps_flat, dim=1)
-                loss_llm_ulb = F.kl_div(ulb_pred_log_prob, ulb_llm_prob, reduction='batchmean')
+                # 计算 MSE Loss (纯文本特征空间对齐)
+                loss_sccm = F.mse_loss(student_prototypes_W_robust, teacher_prototypes_Pg)
                 
-                # 合并 LLM 损失
-                loss_llm = (loss_llm_lb + loss_llm_ulb) / 2.0
-                loss_total += args.lambda_llm * loss_llm
+                loss_total += args.lambda_sccm * loss_sccm
             
         # 5. 反向传播
         optimizer.zero_grad()
@@ -422,43 +526,52 @@ def train(args, snapshot_path):
         scaler.step(optimizer)
         scaler.update()
 
-        # 6. 更新日志
+        # 6. (新) 更新 EMA Teacher 模型权重
+        update_ema_variables(model_student, model_teacher, args.ema_decay)
+
+        # 7. 更新日志
         writer.add_scalar('train/loss_total', loss_total.item(), iter_num)
         writer.add_scalar('train/loss_sup', loss_sup.item(), iter_num)
         writer.add_scalar('train/loss_consis_map', loss_consis_map.item(), iter_num)
         writer.add_scalar('train/loss_consis_feat', loss_consis_feat.item(), iter_num)
-        writer.add_scalar('train/loss_llm', loss_llm.item(), iter_num)
+        writer.add_scalar('train/loss_sccm', loss_sccm.item(), iter_num) # (新)
         writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], iter_num)
 
         # Update tqdm
         p_bar.set_description(
-            'iter %d: total=%.4f (sup=%.4f, consis=%.4f, llm=%.4f)' % 
-            (iter_num, loss_total.item(), loss_sup.item(), (loss_consis_map + loss_consis_feat).item(), loss_llm.item())
+            'iter %d: total=%.4f (sup=%.4f, consis=%.4f, sccm=%.4f)' % 
+            (iter_num, loss_total.item(), loss_sup.item(), (loss_consis_map + loss_consis_feat).item(), loss_sccm.item())
         )
 
         # Log to console
         if iter_num % 50 == 0:
             logging.info(
-                "iter %d: total=%.5f (sup=%.5f, cons_map=%.5f, cons_feat=%.5f, llm=%.5f)",
+                "iter %d: total=%.5f (sup=%.5f, cons_map=%.5f, cons_feat=%.5f, sccm=%.5f)",
                 iter_num,
                 loss_total.item(),
                 loss_sup.item(),
                 loss_consis_map.item(),
                 loss_consis_feat.item(),
-                loss_llm.item()
+                loss_sccm.item()
             )
             
     if p_bar is not None:
         p_bar.close()
 
-    # ========== Save Final VPT+TPT Weights ==========
+    # ========== (新) Save Final Student and Teacher Weights ==========
     if args.save_model:
-        save_path = os.path.join(snapshot_path, "vpt_tpt_final_weights.pth")
-        vpt_tpt_model.save_all_prompts(save_path)
-        logging.info(f"Saved final VPT+TPT weights to {save_path}")
+        save_path_student = os.path.join(snapshot_path, "vpt_tpt_student_final_weights.pth")
+        model_student.save_all_prompts(save_path_student)
+        
+        save_path_teacher = os.path.join(snapshot_path, "vpt_tpt_teacher_final_weights.pth")
+        model_teacher.save_all_prompts(save_path_teacher)
+        
+        logging.info(f"Saved final STUDENT prompts to {save_path_student}")
+        logging.info(f"Saved final TEACHER (EMA) prompts to {save_path_teacher} (Recommended for inference)")
+
 
     writer.close()
-    logging.info("VPT+TPT training finished.")
+    logging.info("VPT+TPT (EMA+SCCM) training finished.")
 
 
 if __name__ == "__main__":

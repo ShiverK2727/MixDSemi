@@ -255,6 +255,9 @@ class ProstateSegmentation(Dataset):
             anco_sample = self.normal_toTensor(anco_sample)
         return anco_sample
 
+
+
+
     def __str__(self):
         return 'Prostate(phase=' + self.phase+str(self.splitid) + ')'
 

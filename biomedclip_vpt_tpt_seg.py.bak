@@ -158,10 +158,6 @@ def create_biomedclip_model_and_preprocess_local(model_path: str, device: str):
 class VPT_TPT_CLIP_Seg(nn.Module):
     """
     VPT (Deep) + TPT (CoOp-style) + 直接 Patch-Matching 的分割模型
-    
-    支持通过 use_vpt 参数控制是否使用 VPT：
-    - use_vpt=True: 使用 VPT-Deep 注入视觉 prompts
-    - use_vpt=False: 直接使用原始 CLIP 视觉编码器（不注入 prompts）
     """
 
     def __init__(
@@ -171,12 +167,10 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         visual_prompt_config: VisualPromptConfig,
         text_prompt_config: TextPromptConfig,
         freeze_backbone: bool = True,
-        use_vpt: bool = True,
     ):
         super().__init__()
         self.model = biomedclip_model
         self.tokenizer = tokenizer
-        self.use_vpt = use_vpt
         
         if freeze_backbone:
             for param in self.model.parameters():
@@ -250,34 +244,6 @@ class VPT_TPT_CLIP_Seg(nn.Module):
             x_with_prompts = torch.cat([x, prompt_tokens], dim=1)
             x_with_prompts = block(x_with_prompts)
             x = x_with_prompts[:, : -(self.visual_prompt_learner.config.num_prompts), :]
-
-        x = trunk.norm(x)
-        patch_tokens = x[:, 1:, :] # [B, N, 768] (N=196)
-        patch_features = self.model.visual.head(patch_tokens) # [B, N, D] (D=512)
-        patch_features = F.normalize(patch_features, dim=-1)
-
-        return patch_features
-    
-    def _visual_forward_without_prompts(self, images: torch.Tensor) -> torch.Tensor:
-        """直接使用原始 CLIP 视觉编码器（不注入 VPT prompts）"""
-        trunk = self.model.visual.trunk
-        batch_size = images.shape[0]
-
-        x_patches = trunk.patch_embed(images)
-        cls_token = trunk.cls_token.expand(batch_size, -1, -1)
-        x = torch.cat([cls_token, x_patches], dim=1)
-        
-        x = x + trunk.pos_embed[:, : x.size(1), :]
-        x = trunk.pos_drop(x)
-        x = trunk.patch_drop(x)
-
-        norm_pre = getattr(trunk, "norm_pre", None)
-        if norm_pre is not None and not isinstance(norm_pre, nn.Identity):
-            x = norm_pre(x)
-
-        # 直接通过 Transformer blocks，不注入 prompts
-        for block in trunk.blocks:
-            x = block(x)
 
         x = trunk.norm(x)
         patch_tokens = x[:, 1:, :] # [B, N, 768] (N=196)
@@ -428,8 +394,7 @@ class VPT_TPT_CLIP_Seg(nn.Module):
     def forward(
         self, 
         images: torch.Tensor, 
-        text_list: List[str],
-        use_vpt: Optional[bool] = None
+        text_list: List[str]
     ) -> Dict[str, torch.Tensor]:
         """
         模型的主 forward pass (VPT + TPT-CoOp + 直接 Patch-Matching)
@@ -437,7 +402,6 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         Args:
             images (torch.Tensor): [B, 3, H, W] 预处理后的图像
             text_list (List[str]): K 个类别的字符串列表
-            use_vpt (Optional[bool]): 是否使用 VPT。如果为 None，则使用初始化时的 self.use_vpt
         
         Returns:
             Dict[str, torch.Tensor]:
@@ -447,15 +411,9 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         device = self.device
         images = images.to(device)
         # (text_list 已经是字符串列表)
-        
-        # 决定是否使用 VPT
-        _use_vpt = self.use_vpt if use_vpt is None else use_vpt
 
-        # 1. 提取视觉 patch 特征
-        if _use_vpt:
-            patch_features = self._visual_forward_with_prompts(images) # [B, N, D]
-        else:
-            patch_features = self._visual_forward_without_prompts(images) # [B, N, D]
+        # 1. 提取视觉 patch 特征 (V_l 生效)
+        patch_features = self._visual_forward_with_prompts(images) # [B, N, D]
         
         B, N, D_visual = patch_features.shape
         if D_visual != self.clip_embed_dim:
@@ -504,246 +462,6 @@ class VPT_TPT_CLIP_Seg(nn.Module):
         self.text_prompt_learner.load_from_state_dict(state_dict['text_prompt_learner'])
         print(f"✓ 所有 PEFT 权重已从 {filepath} 加载")
 
-
-# --------------------------------------------------------------------------
-# 3b. TPT-only 模型（不包含 VPT）
-# --------------------------------------------------------------------------
-
-class TPT_CLIP_Seg(nn.Module):
-    """
-    纯 TPT (CoOp-style) + 原始 CLIP 视觉编码器的分割模型
-    
-    相比 VPT_TPT_CLIP_Seg，此模型：
-    - 不包含 VisualPromptLearner（VPT）
-    - 直接使用原始 CLIP 视觉编码器提取 patch features
-    - 只训练 TextPromptLearner（TPT）参数
-    """
-
-    def __init__(
-        self,
-        biomedclip_model: nn.Module,
-        tokenizer,
-        text_prompt_config: TextPromptConfig,
-        freeze_backbone: bool = True,
-    ):
-        super().__init__()
-        self.model = biomedclip_model
-        self.tokenizer = tokenizer
-        
-        if freeze_backbone:
-            for param in self.model.parameters():
-                param.requires_grad = False
-            self.model.eval()
-        
-        # 只初始化 TPT（文本 prompts）
-        self.text_prompt_learner = TextPromptLearner(text_prompt_config)
-        
-        # 获取 CLIP 嵌入维度
-        if hasattr(self.model.text, 'output_dim'):
-            self.clip_embed_dim = self.model.text.output_dim
-        elif hasattr(self.model.text, 'proj') and isinstance(self.model.text.proj, nn.Sequential):
-            self.clip_embed_dim = self.model.text.proj[-1].out_features
-        else:
-            self.clip_embed_dim = 512
-            print(f"警告: 无法自动检测 CLIP 嵌入维度，使用默认值 {self.clip_embed_dim}")
-        
-        for param in self.text_prompt_learner.parameters():
-            param.requires_grad = True
-        
-        model_device = next(self.model.parameters()).device
-        self.to(model_device)
-
-        total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print("=" * 70)
-        print("✓ TPT_CLIP_Seg (仅 TPT-CoOp，无 VPT) 初始化成功")
-        print(f"  - 文本 Prompts (C_l, CoOp): {self.text_prompt_learner.prompts.numel():,}")
-        print(f"  - 总可训练参数: {total_trainable:,}")
-        print("=" * 70)
-
-    @property
-    def device(self) -> torch.device:
-        """获取模型所在设备"""
-        return next(self.model.parameters()).device
-
-    def _visual_forward(self, images: torch.Tensor) -> torch.Tensor:
-        """使用原始 CLIP 视觉编码器（不注入任何 prompts）"""
-        trunk = self.model.visual.trunk
-        batch_size = images.shape[0]
-
-        x_patches = trunk.patch_embed(images)
-        cls_token = trunk.cls_token.expand(batch_size, -1, -1)
-        x = torch.cat([cls_token, x_patches], dim=1)
-        
-        x = x + trunk.pos_embed[:, : x.size(1), :]
-        x = trunk.pos_drop(x)
-        x = trunk.patch_drop(x)
-
-        norm_pre = getattr(trunk, "norm_pre", None)
-        if norm_pre is not None and not isinstance(norm_pre, nn.Identity):
-            x = norm_pre(x)
-
-        for block in trunk.blocks:
-            x = block(x)
-
-        x = trunk.norm(x)
-        patch_tokens = x[:, 1:, :]
-        patch_features = self.model.visual.head(patch_tokens)
-        patch_features = F.normalize(patch_features, dim=-1)
-
-        return patch_features
-
-    def encode_text_with_prompts(self, text_list: List[str]) -> torch.Tensor:
-        """
-        在 BiomedCLIP 文本分支中注入 CoOp-style prompts (C_l)
-        构建 [CLS, C_l, Class, SEP] 序列 (BERT风格)
-        
-        （与 VPT_TPT_CLIP_Seg 的实现相同）
-        """
-        text_transformer = self.model.text
-        device = self.device
-        K = len(text_list)
-
-        context_vectors = self.text_prompt_learner.prompts
-        P_t = context_vectors.shape[0]
-
-        if hasattr(self.tokenizer, 'tokenizer'):
-            cls_token_id = self.tokenizer.tokenizer.cls_token_id
-            sep_token_id = self.tokenizer.tokenizer.sep_token_id
-        else:
-            cls_token_id = 2
-            sep_token_id = 3
-        
-        if hasattr(text_transformer.transformer, 'embeddings'):
-            cls_token = torch.tensor([[cls_token_id]], device=device).long()
-            sep_token = torch.tensor([[sep_token_id]], device=device).long()
-            
-            cls_embed = text_transformer.transformer.embeddings.word_embeddings(cls_token).squeeze(0)
-            sep_embed = text_transformer.transformer.embeddings.word_embeddings(sep_token).squeeze(0)
-        else:
-            raise AttributeError("无法找到 BERT 的 embeddings 层")
-
-        all_text_features = []
-        for class_name in text_list:
-            class_tokens = self.tokenizer(class_name).to(device)
-            
-            sep_indices = (class_tokens == sep_token_id).nonzero(as_tuple=False)
-            if len(sep_indices) > 0:
-                sep_idx = sep_indices[0, 1].item()
-            else:
-                sep_idx = (class_tokens != 0).sum(dim=1).item() - 1
-            
-            class_tokens_clean = class_tokens[0, 1:sep_idx]
-            class_embed = text_transformer.transformer.embeddings.word_embeddings(class_tokens_clean)
-            L_k = class_embed.shape[0]
-            
-            full_sequence = torch.cat([cls_embed, context_vectors, class_embed, sep_embed], dim=0)
-            seq_len = full_sequence.shape[0]
-            
-            position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0)
-            token_type_ids = torch.zeros(1, seq_len, dtype=torch.long, device=device)
-            
-            position_embeddings = text_transformer.transformer.embeddings.position_embeddings(position_ids)
-            token_type_embeddings = text_transformer.transformer.embeddings.token_type_embeddings(token_type_ids)
-            
-            full_sequence = full_sequence.unsqueeze(0)
-            embeddings = full_sequence + position_embeddings + token_type_embeddings
-            embeddings = text_transformer.transformer.embeddings.LayerNorm(embeddings)
-            embeddings = text_transformer.transformer.embeddings.dropout(embeddings)
-            
-            attention_mask = torch.ones(1, seq_len, dtype=torch.long, device=device)
-            extended_attention_mask = text_transformer.transformer.get_extended_attention_mask(
-                attention_mask, (1, seq_len), device
-            )
-            
-            encoder_outputs = text_transformer.transformer.encoder(
-                embeddings,
-                attention_mask=extended_attention_mask,
-            )
-            
-            sequence_output = encoder_outputs[0]
-            
-            if hasattr(text_transformer, 'pooler') and text_transformer.pooler is not None:
-                pooled_output = text_transformer.pooler(encoder_outputs, attention_mask)
-            else:
-                pooled_output = sequence_output[:, 0, :]
-            
-            if hasattr(text_transformer, 'proj'):
-                text_features = text_transformer.proj(pooled_output)
-            else:
-                text_features = pooled_output
-            
-            all_text_features.append(text_features.squeeze(0))
-
-        W_robust = torch.stack(all_text_features, dim=0)
-        W_robust = F.normalize(W_robust, dim=-1)
-        
-        return W_robust
-
-    def forward(
-        self, 
-        images: torch.Tensor, 
-        text_list: List[str]
-    ) -> Dict[str, torch.Tensor]:
-        """
-        模型的主 forward pass (仅 TPT-CoOp + 原始 CLIP 视觉编码器)
-        
-        Args:
-            images (torch.Tensor): [B, 3, H, W] 预处理后的图像
-            text_list (List[str]): K 个类别的字符串列表
-        
-        Returns:
-            Dict[str, torch.Tensor]:
-                "H_semantic_maps": [B, K, N] 最终的 14x14 语义图 (N=196)
-                "patch_features": [B, N, D] patch 特征 (用于一致性损失)
-                "W_robust": [K, D] 文本原型
-        """
-        device = self.device
-        images = images.to(device)
-
-        # 1. 提取视觉 patch 特征（使用原始编码器）
-        patch_features = self._visual_forward(images)
-        
-        B, N, D_visual = patch_features.shape
-        if D_visual != self.clip_embed_dim:
-             raise ValueError(f"视觉输出维度 {D_visual} 与 CLIP 嵌入维度 {self.clip_embed_dim} 不匹配")
-        
-        # 2. 提取文本原型（TPT 生效）
-        W_robust = self.encode_text_with_prompts(text_list)
-        K, D_text = W_robust.shape
-        
-        # 3. 计算语义图
-        W_robust_expanded = W_robust.unsqueeze(0).expand(B, -1, -1)
-        H_semantic_maps = W_robust_expanded @ patch_features.transpose(1, 2)
-        
-        return {
-            "H_semantic_maps": H_semantic_maps,
-            "patch_features": patch_features,
-            "W_robust": W_robust
-        }
-
-    def save_prompts(self, filepath: str) -> None:
-        """保存 TPT 权重"""
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        save_dict = {
-            'text_prompt_learner': self.text_prompt_learner.state_dict_for_save(),
-        }
-        torch.save(save_dict, filepath)
-        print(f"✓ TPT 权重已保存到: {filepath}")
-
-    def load_prompts(self, filepath: str, map_location: Optional[str] = None) -> None:
-        """加载 TPT 权重"""
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"未找到权重文件: {filepath}")
-        
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            state_dict = torch.load(filepath, map_location=map_location or self.device)
-            
-        self.text_prompt_learner.load_from_state_dict(state_dict['text_prompt_learner'])
-        print(f"✓ TPT 权重已从 {filepath} 加载")
-
-
 # --------------------------------------------------------------------------
 # 4. 图像预处理 (与 v2 相同)
 # --------------------------------------------------------------------------
@@ -780,15 +498,9 @@ def preprocess_tensor_images(images: torch.Tensor, preprocess, device: str):
     
     mn = float(imgs.min().item())
     mx = float(imgs.max().item())
-    # Robustly detect input range:
-    # - If values are roughly in [-1, 1] (mn < 0), convert to [0,1].
-    # - If values are in [0,1], leave as-is.
-    # - If values are in [0,255], scale by 255.
-    if mn < -0.1 and mx <= 1.1:
-        # input is likely in [-1, 1]
+    if mn >= -1.1 and mx <= 1.1:
         imgs = (imgs + 1.0) / 2.0
     elif mx > 2.0:
-        # input is likely in [0, 255]
         imgs = imgs / 255.0
     
     target, mean, std = _extract_preprocess_params(preprocess)
@@ -864,53 +576,6 @@ def build_vpt_tpt_seg_model(
     )
 
     return model, preprocess, tokenizer
-
-
-def build_tpt_seg_model(
-    model_path: str,
-    device: str,
-    text_num_prompts: int = 4,
-    freeze_backbone: bool = True,
-):
-    """
-    构建纯 TPT 分割模型（不包含 VPT）
-    
-    Args:
-        model_path: BiomedCLIP 模型路径
-        device: 设备 (cuda/cpu)
-        text_num_prompts: TPT prompt 数量
-        freeze_backbone: 是否冻结 CLIP backbone
-    
-    Returns:
-        model, preprocess, tokenizer
-    """
-    
-    base_model, preprocess, tokenizer = create_biomedclip_model_and_preprocess_local(
-        model_path, device
-    )
-    
-    try:
-        if hasattr(base_model.text.transformer, 'embeddings'):
-            text_embed_dim = base_model.text.transformer.embeddings.word_embeddings.embedding_dim
-        else:
-            text_embed_dim = 768
-    except Exception:
-        text_embed_dim = 768
-
-    text_prompt_config = TextPromptConfig(
-        embed_dim=text_embed_dim,
-        num_prompts=text_num_prompts,
-    )
-
-    model = TPT_CLIP_Seg(
-        base_model,
-        tokenizer,
-        text_prompt_config,
-        freeze_backbone=freeze_backbone,
-    )
-
-    return model, preprocess, tokenizer
-
 
 # --------------------------------------------------------------------------
 # 6. 示例用法 (已更新)

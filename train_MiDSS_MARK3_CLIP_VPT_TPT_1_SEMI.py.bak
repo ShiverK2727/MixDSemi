@@ -20,12 +20,9 @@ from tqdm import tqdm
 import dataloaders.custom_transforms as tr
 from dataloaders.dataloader_dc import BUSISegmentation, FundusSegmentation, MNMSSegmentation, ProstateSegmentation
 # 导入 VPT+TPT 分割模型
-# 确保这个文件在您的 python 路径上
 from biomedclip_vpt_tpt_seg import build_vpt_tpt_seg_model
-# 确保这个文件在您的 python 路径上
 from utils.text_sampler_an import TextSampler
 from torch.cuda.amp import GradScaler, autocast
-# 确保这个文件在您的 python 路径上
 from utils.training import cycle
 
 parser = argparse.ArgumentParser()
@@ -95,21 +92,6 @@ parser.add_argument('--freeze_backbone', action='store_true', default=True,
 parser.add_argument('--text_root', type=str, default='/app/MixDSemi/SynFoCLIP/code/text',
                     help='Directory containing dataset text description JSON files')
 
-# ==================== (新) Loss 权重 ====================
-parser.add_argument('--lambda_sup', type=float, default=1.0,
-                    help='Weight for supervised loss (L_sup)')
-parser.add_argument('--lambda_consis', type=float, default=1.0,
-                    help='Weight for *all* consistency losses (Map + Feat)')
-parser.add_argument('--lambda_llm', type=float, default=1.0,
-                    help='Weight for LLM knowledge distillation loss (L_llm)')
-parser.add_argument('--feat_consis_scale', type=float, default=0.1,
-                    help='Scaling factor for patch feature consistency loss (relative to map consistency)')
-parser.add_argument('--T_consis', type=float, default=0.5,
-                    help='Temperature for sharpening pseudo-labels in consistency loss')
-parser.add_argument('--T_llm', type=float, default=1.0,
-                    help='Temperature for sharpening LLM score_tensor labels')
-
-
 args = parser.parse_args()
 
 TEXT_DATASET_DEFAULTS = {
@@ -167,7 +149,7 @@ def train(args, snapshot_path):
         preprocess_dir=dataset_preprocess_dir,
         llm_model=args.llm_model,
         describe_nums=args.describe_nums,
-        return_score=True, # 确保返回 score_tensor
+        return_score=True,
         allow_missing_scores=False,
     )
     ulb_kwargs = dict(
@@ -183,14 +165,17 @@ def train(args, snapshot_path):
         preprocess_dir=dataset_preprocess_dir,
         llm_model=args.llm_model,
         describe_nums=args.describe_nums,
-        return_score=True, # 确保返回 score_tensor
+        return_score=True,
         allow_missing_scores=False,
     )
     lb_dataset = dataset(**lb_kwargs)
     ulb_dataset = dataset(**ulb_kwargs)
 
     # --- Text sampling ---
-    # (这部分现在主要用于 `class_text` 的预编码，仍然是必要的)
+    # 使用 text_sampler_an.py，其 load_texts 返回二元组：
+    #   (per_class_lists, flat_list)
+    # - per_class_lists: list of lists，每项是一个类别的文本列表
+    # - flat_list: 所有类别按顺序拼接的扁平列表
     text_dataset_key = TEXT_DATASET_DEFAULTS.get(args.dataset)
     text_sampler = TextSampler(args.text_root)
     per_class_lists, flat_list = text_sampler.load_texts(
@@ -198,6 +183,7 @@ def train(args, snapshot_path):
         llm=args.llm_model,
         describe_nums=args.describe_nums,
     )
+
     logging.info(
         "TextSampler loaded dataset '%s' (num_classes=%d, total_texts=%d)",
         text_dataset_key,
@@ -244,13 +230,9 @@ def train(args, snapshot_path):
     logging.info(f"Total iterations: {max_iterations}")
     
     logging.info(
-        "CLIP loss weights: L_sup=%.3f, L_consis=%.3f (feat_scale=%.3f, T_consis=%.2f), L_llm=%.3f (T_llm=%.2f)",
-        args.lambda_sup,
-        args.lambda_consis,
-        args.feat_consis_scale,
-        args.T_consis,
-        args.lambda_llm,
-        args.T_llm
+        "CLIP loss weights: mv_anchor=%.3f, sw_reg=%.3f (Ortho removed)",
+        args.clip_loss_mv_anchor_weight,
+        args.clip_loss_sw_reg_weight,
     )
     
     # ... (AMP 逻辑保持不变) ...
@@ -259,50 +241,61 @@ def train(args, snapshot_path):
     amp_cm = autocast if amp_enabled else contextlib.nullcontext
     logging.info(f"AMP (Mixed Precision) enabled: {amp_enabled}")
 
-    # --- 预编码类别文本特征 (保持不变) ---
-    # 这部分用于生成 W_robust (Student)
+    # --- 预编码类别文本特征 (使用 args.class_text 和 per_class_lists) ---
+    # 为每个类别（包括背景）获取其所有文本描述并预编码
     logging.info("Pre-encoding class text features for K=%d classes...", len(args.class_text))
+    
+    # 为每个类别收集文本描述
+    # args.class_text = ['background', 'class1', 'class2', ...]
+    # per_class_lists[i] 对应 args.class_text[i+1]（因为 per_class_lists 通常不含 background）
+    # 但为了安全，我们直接使用 per_class_lists 的长度匹配
+    
     class_text_features_list = []
     with torch.no_grad():
         for i, class_name in enumerate(args.class_text):
             if i == 0:
+                # 背景类：使用类名本身
                 texts_for_class = [class_name]
             else:
+                # 前景类：使用 per_class_lists 中对应的文本（索引 i-1）
                 if i - 1 < len(per_class_lists):
                     texts_for_class = per_class_lists[i - 1]
                 else:
+                    # 如果 per_class_lists 不够长，回退到类名
                     logging.warning(f"per_class_lists 索引 {i-1} 越界，使用类名 '{class_name}'")
                     texts_for_class = [class_name]
             
+            # 使用 VPT_TPT 模型的 encode_text_with_prompts 预编码
+            # 注意：这会应用 TPT (CoOp-style) prompts
             W_class = vpt_tpt_model.encode_text_with_prompts(texts_for_class)  # [len(texts), D]
+            # 对该类的所有文本取平均得到类原型
             W_class_mean = W_class.mean(dim=0, keepdim=True)  # [1, D]
             class_text_features_list.append(W_class_mean)
         
+        # 堆叠为 [K, D]
         class_text_features = torch.cat(class_text_features_list, dim=0)  # [K, D]
         class_text_features = F.normalize(class_text_features, dim=-1)
     
     logging.info(f"Pre-encoded class_text_features: {class_text_features.shape}")
-    
+    # class_text_features 现在可以在训练循环中直接使用
+
     # --- Main training loop (VPT+TPT) ---
     p_bar = tqdm(range(1, max_iterations + 1), desc=f'VPT+TPT Training')
     
     vpt_tpt_model.train()
 
     for iter_num in p_bar:
-        # 1. 加载数据
         lb_sample = next(lb_dataloader)
         ulb_sample = next(ulb_dataloader)
+        lb_unet_size_x_w = lb_sample['unet_size_img']
+        ulb_unet_size_x_w, ulb_unet_size_x_s = ulb_sample['unet_size_img'], ulb_sample['unet_size_strong_aug']
         
-        lb_unet_size_x_w = lb_sample['unet_size_img'].cuda()
-        ulb_unet_size_x_w, ulb_unet_size_x_s = ulb_sample['unet_size_img'].cuda(), ulb_sample['unet_size_strong_aug'].cuda()
-        
-        # (新) 加载 LLM score_tensor
-        lb_score_tensor = lb_sample['score_tensor'].cuda()
-        ulb_score_tensor = ulb_sample['score_tensor'].cuda()
-        
-        # 2. 处理有标签数据 (GT Label)
+        lb_unet_size_x_w, ulb_unet_size_x_w, ulb_unet_size_x_s = lb_unet_size_x_w.cuda(), ulb_unet_size_x_w.cuda(), ulb_unet_size_x_s.cuda()
+
+        # ====== 下采样标签到 14x14 并构建多通道（背景, 类1, 类2, ...） ======
         if 'unet_size_label' in lb_sample:
             lb_unet_size_label = lb_sample['unet_size_label']
+            # 规范形状 -> (B, H, W)
             if isinstance(lb_unet_size_label, torch.Tensor):
                 if lb_unet_size_label.dim() == 4 and lb_unet_size_label.size(1) == 1:
                     lb_unet_size_label = lb_unet_size_label.squeeze(1)
@@ -310,142 +303,75 @@ def train(args, snapshot_path):
                 lb_unet_size_label = torch.as_tensor(lb_unet_size_label)
             lb_unet_size_label = lb_unet_size_label.long().cuda()
 
-            B_lb, H, W = lb_unet_size_label.shape
-            K_classes = num_classes + 1  # background + n foreground classes
+            B, H, W = lb_unet_size_label.shape
+            channels = num_classes + 1  # background + n foreground classes
 
-            # 构建 one-hot (B_lb, K, H, W)
-            one_hot = torch.zeros((B_lb, K_classes, H, W), dtype=torch.float32, device=lb_unet_size_label.device)
-            for c in range(K_classes):
+            # 简单检查
+            max_label_val = int(lb_unet_size_label.max().item())
+            if max_label_val >= channels:
+                logging.warning(f"Label max value ({max_label_val}) >= expected channels ({channels}).")
+
+            # 构建 one-hot (B, C, H, W)
+            one_hot = torch.zeros((B, channels, H, W), dtype=torch.float32, device=lb_unet_size_label.device)
+            for c in range(channels):
                 one_hot[:, c, :, :] = (lb_unet_size_label == c).float()
 
-            # 下采样到 14x14
+            # 使用自适应平均池化下采样到 14x14
             lb_label_14 = F.adaptive_avg_pool2d(one_hot, (14, 14))
             lb_sample['unet_label_14'] = lb_label_14
-        else:
-            B_lb = lb_unet_size_x_w.shape[0]
-            K_classes = num_classes + 1
 
-        # 3. 准备维度
-        B_ulb = ulb_unet_size_x_w.shape[0]
-        N_patches_flat = 196
-        N_patches_side = 14
-
-        # 4. VPT+TPT 前向过程
+        # ========== VPT+TPT 前向过程 ==========
+        # 对 labeled 和 unlabeled weak 图像进行前向
         with amp_cm():
+            # 1. 对 labeled 图像前向
             from biomedclip_vpt_tpt_seg import preprocess_tensor_images
+            lb_images_preprocessed = preprocess_tensor_images(lb_unet_size_x_w, preprocess, str(device))
+            lb_outputs = vpt_tpt_model(lb_images_preprocessed, args.class_text)
+            # lb_outputs: {
+            #   "H_semantic_maps": [B_lb, K, 196],
+            #   "patch_features": [B_lb, 196, D],
+            #   "W_robust": [K, D]
+            # }
             
-            # 组合 Labeled 和 Unlabeled 图像以提高效率
-            # (注意：强增强只在 ulb 上有)
-            images_weak = torch.cat([lb_unet_size_x_w, ulb_unet_size_x_w], dim=0)
-            images_weak_preprocessed = preprocess_tensor_images(images_weak, preprocess, str(device))
+            # 2. 对 unlabeled weak 图像前向
+            ulb_images_weak_preprocessed = preprocess_tensor_images(ulb_unet_size_x_w, preprocess, str(device))
+            ulb_weak_outputs = vpt_tpt_model(ulb_images_weak_preprocessed, args.class_text)
             
-            # 弱增强前向
-            weak_outputs = vpt_tpt_model(images_weak_preprocessed, args.class_text)
-            
-            # 分离 Labeled 和 Unlabeled 的弱增强输出
-            lb_outputs = {}
-            ulb_weak_outputs = {}
-            lb_outputs["H_semantic_maps"] = weak_outputs["H_semantic_maps"][:B_lb]
-            lb_outputs["patch_features"] = weak_outputs["patch_features"][:B_lb]
-            ulb_weak_outputs["H_semantic_maps"] = weak_outputs["H_semantic_maps"][B_lb:]
-            ulb_weak_outputs["patch_features"] = weak_outputs["patch_features"][B_lb:]
-            
-            # 强增强前向 (仅 Unlabeled)
+            # 3. 对 unlabeled strong 图像前向
             ulb_images_strong_preprocessed = preprocess_tensor_images(ulb_unet_size_x_s, preprocess, str(device))
             ulb_strong_outputs = vpt_tpt_model(ulb_images_strong_preprocessed, args.class_text)
             
-            # ========== (新) Loss 计算 (v2) ==========
+            # ========== Loss 计算（留空，交由用户设计） ==========
+            # 可用的变量：
+            # - lb_outputs["H_semantic_maps"]: [B_lb, K, 196] labeled 语义图
+            # - lb_outputs["patch_features"]: [B_lb, 196, D] labeled patch 特征
+            # - lb_sample['unet_label_14']: [B_lb, K, 14, 14] 下采样的标签（如果存在）
+            # - ulb_weak_outputs, ulb_strong_outputs: unlabeled 的输出
+            # - class_text_features: [K, D] 预编码的类别文本特征
             
-            loss_total = torch.tensor(0.0, device=device)
-            loss_sup = torch.tensor(0.0, device=device)
-            loss_consis_map = torch.tensor(0.0, device=device)
-            loss_consis_feat = torch.tensor(0.0, device=device)
-            loss_llm = torch.tensor(0.0, device=device)
+            # TODO: 在这里添加你的损失函数
+            loss_total = torch.tensor(0.0, device=device)  # 占位符
             
-            # 1. 监督损失 (L_sup) - [Labeled Data] Model vs GT_Label
-            if 'unet_label_14' in lb_sample and args.lambda_sup > 0:
-                lb_pred_maps = lb_outputs["H_semantic_maps"].view(B_lb, K_classes, N_patches_side, N_patches_side)
-                lb_gt_maps = lb_sample['unet_label_14']
-                
-                log_pred = F.log_softmax(lb_pred_maps, dim=1)
-                loss_sup = F.kl_div(log_pred, lb_gt_maps, reduction='batchmean')
-                loss_total += args.lambda_sup * loss_sup
-            
-            # 2. 一致性损失 (L_consis) - [Unlabeled Data] Model_Strong vs Model_Weak
-            if args.lambda_consis > 0:
-                # Map Consistency
-                ulb_weak_maps_logits = ulb_weak_outputs["H_semantic_maps"].view(B_ulb, K_classes, N_patches_side, N_patches_side)
-                with torch.no_grad():
-                    pseudo_label_prob = F.softmax(ulb_weak_maps_logits / args.T_consis, dim=1)
-                
-                ulb_strong_maps_logits = ulb_strong_outputs["H_semantic_maps"].view(B_ulb, K_classes, N_patches_side, N_patches_side)
-                ulb_strong_log_prob = F.log_softmax(ulb_strong_maps_logits, dim=1)
-                
-                loss_consis_map = F.kl_div(ulb_strong_log_prob, pseudo_label_prob, reduction='batchmean')
-                
-                # Feature Consistency
-                feat_weak = ulb_weak_outputs["patch_features"]
-                feat_strong = ulb_strong_outputs["patch_features"]
-                loss_consis_feat = F.mse_loss(feat_strong, feat_weak.detach())
-                
-                # 合并一致性损失
-                loss_consis_total = loss_consis_map + (args.feat_consis_scale * loss_consis_feat)
-                loss_total += args.lambda_consis * loss_consis_total
-            
-            # 3. LLM 知识蒸馏损失 (L_llm) - [All Data] Model vs LLM_Score
-            if args.lambda_llm > 0:
-                # Labeled Data
-                lb_pred_maps_flat = lb_outputs["H_semantic_maps"] # [B_lb, K, 196]
-                lb_score_tensor_flat = lb_score_tensor.view(B_lb, K_classes, N_patches_flat) # [B_lb, K, 196]
-                
-                with torch.no_grad():
-                    lb_llm_prob = F.softmax(lb_score_tensor_flat / args.T_llm, dim=1)
-                lb_pred_log_prob = F.log_softmax(lb_pred_maps_flat, dim=1)
-                loss_llm_lb = F.kl_div(lb_pred_log_prob, lb_llm_prob, reduction='batchmean')
-
-                # Unlabeled Data (使用强增强的预测作为 Student)
-                ulb_pred_maps_flat = ulb_strong_outputs["H_semantic_maps"] # [B_ulb, K, 196]
-                ulb_score_tensor_flat = ulb_score_tensor.view(B_ulb, K_classes, N_patches_flat) # [B_ulb, K, 196]
-                
-                with torch.no_grad():
-                    ulb_llm_prob = F.softmax(ulb_score_tensor_flat / args.T_llm, dim=1)
-                ulb_pred_log_prob = F.log_softmax(ulb_pred_maps_flat, dim=1)
-                loss_llm_ulb = F.kl_div(ulb_pred_log_prob, ulb_llm_prob, reduction='batchmean')
-                
-                # 合并 LLM 损失
-                loss_llm = (loss_llm_lb + loss_llm_ulb) / 2.0
-                loss_total += args.lambda_llm * loss_llm
-            
-        # 5. 反向传播
         optimizer.zero_grad()
         scaler.scale(loss_total).backward()
         scaler.step(optimizer)
         scaler.update()
 
-        # 6. 更新日志
+        # Update Tensorboard
         writer.add_scalar('train/loss_total', loss_total.item(), iter_num)
-        writer.add_scalar('train/loss_sup', loss_sup.item(), iter_num)
-        writer.add_scalar('train/loss_consis_map', loss_consis_map.item(), iter_num)
-        writer.add_scalar('train/loss_consis_feat', loss_consis_feat.item(), iter_num)
-        writer.add_scalar('train/loss_llm', loss_llm.item(), iter_num)
         writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], iter_num)
 
         # Update tqdm
         p_bar.set_description(
-            'iter %d: total=%.4f (sup=%.4f, consis=%.4f, llm=%.4f)' % 
-            (iter_num, loss_total.item(), loss_sup.item(), (loss_consis_map + loss_consis_feat).item(), loss_llm.item())
+            'iter %d: loss=%.4f' % (iter_num, loss_total.item())
         )
 
         # Log to console
         if iter_num % 50 == 0:
             logging.info(
-                "iter %d: total=%.5f (sup=%.5f, cons_map=%.5f, cons_feat=%.5f, llm=%.5f)",
+                "iter %d: loss=%.6f",
                 iter_num,
                 loss_total.item(),
-                loss_sup.item(),
-                loss_consis_map.item(),
-                loss_consis_feat.item(),
-                loss_llm.item()
             )
             
     if p_bar is not None:
@@ -570,6 +496,7 @@ if __name__ == "__main__":
     config_dict['patch_size'] = patch_size
     config_dict['num_classes'] = num_classes
     config_dict['dataset_preprocess_dir'] = dataset_preprocess_dir
+    # (移除了 dataset_test_class 因为这个脚本不包含测试)
     
     config_file = os.path.join(snapshot_path, 'training_config.json')
     with open(config_file, 'w') as f:
